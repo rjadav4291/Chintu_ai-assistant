@@ -1,25 +1,17 @@
-name: Build APK
-on:
-  push:
-  workflow_dispatch:
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: 8.7
-      - name: Build
-        run: gradle assembleDebug --console=plain > build.log 2>&1
-      - name: Show errors
-        if: failure()
-        run: grep -E "^e: |What went wrong" -A4 build.log | head -n 40
-      - uses: actions/upload-artifact@v4
-        with:
-          name: chintu-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
+android {
+    namespace = "com.chintu.assistant"
+    compileSdk = 34
+    defaultConfig { applicationId = "com.chintu.assistant"; minSdk = 26; targetSdk = 34; versionCode = 1; versionName = "0.1" }
+    buildFeatures { compose = true }
+    composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
+    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+    kotlinOptions { jvmTarget = "17" }
+}
+dependencies {
+    implementation(platform("androidx.compose:compose-bom:2024.06.00"))
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.activity:activity-compose:1.9.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.3")
+}
