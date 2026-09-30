@@ -57,11 +57,19 @@ class MainActivity : ComponentActivity() {
                 var name by remember { mutableStateOf(prefs.getString("name", "Chintu")!!) }
                 var showSettings by remember { mutableStateOf(false) }
                 Box(Modifier.fillMaxSize().background(Ink).systemBarsPadding()) {
-                    if (showSettings) SettingsScreen(name, { n ->
-                        val clean = n.trim().ifEmpty { "Chintu" }
-                        prefs.edit().putString("name", clean).apply(); name = clean
-                    }) { showSettings = false }
-                    else MainScreen(name) { showSettings = true }
+                    if (showSettings) {
+                        SettingsScreen(
+                            name = name,
+                            onName = { n ->
+                                val clean = n.trim().ifEmpty { "Chintu" }
+                                prefs.edit().putString("name", clean).apply()
+                                name = clean
+                            },
+                            back = { showSettings = false }
+                        )
+                    } else {
+                        MainScreen(name = name, openSettings = { showSettings = true })
+                    }
                 }
             }
         }
@@ -71,11 +79,19 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun Orb(state: AiState) {
     val t = rememberInfiniteTransition(label = "orb")
-    val pulse by t.animateFloat(0.94f, 1.06f,
-        infiniteRepeatable(tween(if (state == AiState.THINKING) 700 else 2400, easing = Easing { FastOutSlowInEasing.transform(it) }), RepeatMode.Reverse), label = "p")
+    val pulse by t.animateFloat(
+        initialValue = 0.94f,
+        targetValue = 1.06f,
+        animationSpec = infiniteRepeatable(
+            tween(if (state == AiState.THINKING) 700 else 2400, easing = FastOutSlowInEasing),
+            RepeatMode.Reverse
+        ),
+        label = "p"
+    )
     val core = if (state == AiState.ERROR) Red else Cyan
     Canvas(Modifier.size(200.dp)) {
-        val c = Offset(size.width / 2, size.height / 2); val r = size.minDimension / 2 * pulse
+        val c = Offset(size.width / 2, size.height / 2)
+        val r = size.minDimension / 2 * pulse
         drawCircle(Brush.radialGradient(listOf(core.copy(alpha = .35f), Color.Transparent), c, r), r, c)
         drawCircle(Brush.radialGradient(listOf(Color.White.copy(.9f), core, Violet, Color.Transparent), c, r * .62f), r * .62f, c)
     }
@@ -95,8 +111,13 @@ fun MainScreen(name: String, openSettings: () -> Unit, vm: ChatVm = viewModel())
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(vm.messages) { m ->
                 Box(Modifier.fillMaxWidth(), contentAlignment = if (m.fromUser) Alignment.CenterEnd else Alignment.CenterStart) {
-                    Text(m.text, color = Color.White, modifier = Modifier.clip(RoundedCornerShape(16.dp))
-                        .background(if (m.fromUser) Cyan.copy(.22f) else Glass).padding(12.dp))
+                    Text(
+                        m.text,
+                        color = Color.White,
+                        modifier = Modifier.clip(RoundedCornerShape(16.dp))
+                            .background(if (m.fromUser) Cyan.copy(.22f) else Glass)
+                            .padding(12.dp)
+                    )
                 }
             }
         }
