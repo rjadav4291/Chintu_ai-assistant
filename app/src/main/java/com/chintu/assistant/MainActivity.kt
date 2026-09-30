@@ -42,7 +42,7 @@ private val Violet = Color(0xFF8B7CFF)
 private val Red = Color(0xFFFF5D73)
 private val Dim = Color(0xFF9AA6BD)
 
-const val DEFAULT_MODEL = "gpt-6-astra"
+const val DEFAULT_BASE_URL = "https://api.experientiallabs.ai/v1"
 
 enum class AiState { READY, LISTENING, THINKING, SPEAKING, OFFLINE, ERROR }
 data class Msg(val fromUser: Boolean, val text: String, val isError: Boolean = false)
@@ -56,7 +56,10 @@ Truth rules: in this version you can only chat. You have NO tools yet. You canno
 Do not imitate any fictional character.
 """.trimIndent()
 
-fun callAi(apiKey: String, model: String, system: String, turns: List<Pair<String, String>>): String {
+fun hostOf(baseUrl: String): String =
+    try { URL(baseUrl).host } catch (e: Exception) { "online AI" }
+
+fun callAi(baseUrl: String, apiKey: String, model: String, system: String, turns: List<Pair<String, String>>): String {
     val msgs = JSONArray()
     msgs.put(JSONObject().put("role", "system").put("content", system))
     for ((role, text) in turns) msgs.put(JSONObject().put("role", role).put("content", text))
@@ -64,7 +67,7 @@ fun callAi(apiKey: String, model: String, system: String, turns: List<Pair<Strin
         .put("model", model)
         .put("max_completion_tokens", 2000)
         .put("messages", msgs)
-    val conn = URL("https://api.openai.com/v1/chat/completions").openConnection() as HttpURLConnection
+    val conn = URL(baseUrl.trim().trimEnd('/') + "/chat/completions").openConnection() as HttpURLConnection
     try {
         conn.requestMethod = "POST"
         conn.connectTimeout = 15000
@@ -77,7 +80,7 @@ fun callAi(apiKey: String, model: String, system: String, turns: List<Pair<Strin
         val stream = if (code in 200..299) conn.inputStream else conn.errorStream
         val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
         if (code !in 200..299) {
-            val detail = try { JSONObject(text).getJSONObject("error").getString("message") } catch (e: Exception) { "" }
+            val detail = try { JSONObject(text).getJSONObject("error").getString("message") } catch (e: Exception) { text.take(200) }
             throw AiException("HTTP $code $detail")
         }
         val choices = JSONObject(text).getJSONArray("choices")
@@ -118,12 +121,16 @@ class ChatVm : ViewModel() {
         return sub
     }
 
-    fun send(text: String, apiKey: String, model: String, name: String) {
+    fun send(text: String, baseUrl: String, apiKey: String, model: String, name: String) {
         val t = text.trim()
         if (t.isEmpty() || state == AiState.THINKING) return
         messages.add(Msg(true, t))
         if (apiKey.isBlank()) {
             fail("No API key is set. Open Settings and add your key.")
+            return
+        }
+        if (model.isBlank()) {
+            fail("No model is set. Open Settings and enter the model ID.")
             return
         }
         state = AiState.THINKING
@@ -133,7 +140,7 @@ class ChatVm : ViewModel() {
             var reply: String? = null
             var err: String? = null
             try {
-                reply = callAi(apiKey, model, sys, turns)
+                reply = callAi(baseUrl, apiKey, model, sys, turns)
             } catch (e: Exception) {
                 err = describe(e)
             }
@@ -157,7 +164,8 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = darkColorScheme(background = Ink, surface = Ink, primary = Cyan)) {
                 var name by remember { mutableStateOf(prefs.getString("name", "Chintu") ?: "Chintu") }
                 var apiKey by remember { mutableStateOf(prefs.getString("openai_key", "") ?: "") }
-                var model by remember { mutableStateOf(prefs.getString("openai_model", DEFAULT_MODEL) ?: DEFAULT_MODEL) }
+                var model by remember { mutableStateOf(prefs.getString("openai_model", "") ?: "") }
+                var baseUrl by remember { mutableStateOf(prefs.getString("base_url", DEFAULT_BASE_URL) ?: DEFAULT_BASE_URL) }
                 var showSettings by remember { mutableStateOf(false) }
                 Box(Modifier.fillMaxSize().background(Ink).systemBarsPadding()) {
                     if (showSettings) {
@@ -165,6 +173,7 @@ class MainActivity : ComponentActivity() {
                             name = name,
                             keySaved = apiKey.isNotBlank(),
                             model = model,
+                            baseUrl = baseUrl,
                             onName = { n ->
                                 val clean = n.trim().ifEmpty { "Chintu" }
                                 prefs.edit().putString("name", clean).apply()
@@ -179,14 +188,18 @@ class MainActivity : ComponentActivity() {
                                 apiKey = ""
                             },
                             onModel = { m ->
-                                val clean = m.trim().ifEmpty { DEFAULT_MODEL }
-                                prefs.edit().putString("openai_model", clean).apply()
-                                model = clean
+                                prefs.edit().putString("openai_model", m.trim()).apply()
+                                model = m.trim()
+                            },
+                            onBaseUrl = { u ->
+                                val clean = u.trim().ifEmpty { DEFAULT_BASE_URL }
+                                prefs.edit().putString("base_url", clean).apply()
+                                baseUrl = clean
                             },
                             back = { showSettings = false }
                         )
                     } else {
-                        MainScreen(name = name, apiKey = apiKey, model = model, openSettings = { showSettings = true })
+                        MainScreen(name = name, baseUrl = baseUrl, apiKey = apiKey, model = model, openSettings = { showSettings = true })
                     }
                 }
             }
@@ -216,13 +229,14 @@ fun Orb(state: AiState) {
 }
 
 @Composable
-fun MainScreen(name: String, apiKey: String, model: String, openSettings: () -> Unit, vm: ChatVm = viewModel()) {
+fun MainScreen(name: String, baseUrl: String, apiKey: String, model: String, openSettings: () -> Unit, vm: ChatVm = viewModel()) {
     var input by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     LaunchedEffect(vm.messages.size) {
         if (vm.messages.isNotEmpty()) listState.animateScrollToItem(vm.messages.size - 1)
     }
-    val status = if (vm.state == AiState.THINKING) "THINKING · contacting online AI (OpenAI)"
+    val host = hostOf(baseUrl)
+    val status = if (vm.state == AiState.THINKING) "THINKING · contacting $host"
     else "${vm.state.name} · ONLINE AI"
     Column(Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
@@ -252,7 +266,7 @@ fun MainScreen(name: String, apiKey: String, model: String, openSettings: () -> 
             OutlinedButton(onClick = {}, enabled = false) { Text("Mic") }
             Spacer(Modifier.width(4.dp))
             Button(
-                onClick = { vm.send(input, apiKey, model, name); input = "" },
+                onClick = { vm.send(input, baseUrl, apiKey, model, name); input = "" },
                 enabled = vm.state != AiState.THINKING
             ) { Text("Send") }
         }
@@ -264,15 +278,18 @@ fun SettingsScreen(
     name: String,
     keySaved: Boolean,
     model: String,
+    baseUrl: String,
     onName: (String) -> Unit,
     onSaveKey: (String) -> Unit,
     onClearKey: () -> Unit,
     onModel: (String) -> Unit,
+    onBaseUrl: (String) -> Unit,
     back: () -> Unit
 ) {
     var draft by remember { mutableStateOf(name) }
     var keyDraft by remember { mutableStateOf("") }
     var modelDraft by remember { mutableStateOf(model) }
+    var urlDraft by remember { mutableStateOf(baseUrl) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -281,7 +298,9 @@ fun SettingsScreen(
         Text("Assistant", fontSize = 22.sp, color = Color.White)
         OutlinedTextField(draft, { draft = it }, label = { Text("Assistant name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         Button(onClick = { onName(draft) }) { Text("Save name") }
-        Text("Online AI (OpenAI)", fontSize = 22.sp, color = Color.White)
+        Text("Online AI provider", fontSize = 22.sp, color = Color.White)
+        OutlinedTextField(urlDraft, { urlDraft = it }, label = { Text("Server address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Button(onClick = { onBaseUrl(urlDraft) }) { Text("Save address") }
         Text(if (keySaved) "API key: saved on this phone" else "API key: not set", color = if (keySaved) Cyan else Red)
         OutlinedTextField(
             keyDraft, { keyDraft = it }, label = { Text("Paste API key") }, singleLine = true,
@@ -291,10 +310,10 @@ fun SettingsScreen(
             Button(onClick = { onSaveKey(keyDraft); keyDraft = "" }, enabled = keyDraft.isNotBlank()) { Text("Save key") }
             OutlinedButton(onClick = onClearKey, enabled = keySaved) { Text("Remove key") }
         }
-        OutlinedTextField(modelDraft, { modelDraft = it }, label = { Text("Model") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(modelDraft, { modelDraft = it }, label = { Text("Model ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         Button(onClick = { onModel(modelDraft) }) { Text("Save model") }
         Text(
-            "Your messages are sent to OpenAI's servers to get replies. The key is stored in this app's private storage, not yet encrypted (planned for the Privacy phase).",
+            "Your messages are sent to the server address above. A gateway service may forward them to the model provider. The key is stored in this app's private storage, not yet encrypted (planned for the Privacy phase).",
             color = Dim
         )
     }
