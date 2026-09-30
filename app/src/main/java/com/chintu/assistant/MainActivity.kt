@@ -1,11 +1,16 @@
 package com.chintu.assistant
 
+import android.Manifest
 import android.content.Context
+import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -24,6 +29,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -52,6 +58,7 @@ fun systemPrompt(name: String) = """
 You are $name, a personal assistant inside an Android app.
 Personality: friendly, calm, helpful, natural, slightly futuristic. Keep answers short, in short natural sentences. Explain step by step only when the question is complicated.
 Reply in the language the user writes in (Gujarati, Hindi, English or Hinglish).
+Your replies may be spoken aloud, so do not use emojis, markdown, bullet symbols or long lists.
 Truth rules: in this version you can only chat. You have NO tools yet. You cannot open apps, save notes or memories, set timers or reminders, search the web, check weather, or control the phone. Never claim you did any of these. If asked, say honestly that it is not available yet.
 Do not imitate any fictional character.
 """.trimIndent()
@@ -147,6 +154,11 @@ class ChatVm : ViewModel() {
         state = AiState.ERROR
     }
 
+    fun notice(text: String, serious: Boolean) {
+        messages.add(Msg(false, text, true))
+        state = if (serious) AiState.ERROR else AiState.READY
+    }
+
     private fun buildTurns(): List<Pair<String, String>> {
         val turns = mutableListOf<Pair<String, String>>()
         for (m in messages) {
@@ -161,7 +173,7 @@ class ChatVm : ViewModel() {
         return sub
     }
 
-    fun send(text: String, baseUrl: String, apiKey: String, model: String, name: String) {
+    fun send(text: String, baseUrl: String, apiKey: String, model: String, name: String, onReply: (String) -> Unit) {
         val t = text.trim()
         if (t.isEmpty() || state == AiState.THINKING) return
         messages.add(Msg(true, t))
@@ -190,15 +202,37 @@ class ChatVm : ViewModel() {
                 if (r != null) {
                     messages.add(Msg(false, r))
                     state = AiState.READY
+                    onReply(r)
                 } else fail(er ?: "Unknown error")
             }
         }.start()
     }
 }
 
+private fun loadCfg(p: SharedPreferences): VoiceCfg = VoiceCfg(
+    lang = try { Lang.valueOf(p.getString("lang", "AUTO") ?: "AUTO") } catch (e: Exception) { Lang.AUTO },
+    voiceOn = p.getBoolean("voice_on", true),
+    rate = p.getFloat("rate", 1f),
+    pitch = p.getFloat("pitch", 1f),
+    voiceName = p.getString("voice_name", "") ?: ""
+)
+
+private fun saveCfg(p: SharedPreferences, c: VoiceCfg) {
+    p.edit()
+        .putString("lang", c.lang.name)
+        .putBoolean("voice_on", c.voiceOn)
+        .putFloat("rate", c.rate)
+        .putFloat("pitch", c.pitch)
+        .putString("voice_name", c.voiceName)
+        .apply()
+}
+
 class MainActivity : ComponentActivity() {
+    private lateinit var voice: VoiceManager
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        voice = VoiceManager(applicationContext)
         val prefs = getSharedPreferences("chintu", Context.MODE_PRIVATE)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(background = Ink, surface = Ink, primary = Cyan)) {
@@ -206,6 +240,7 @@ class MainActivity : ComponentActivity() {
                 var apiKey by remember { mutableStateOf(prefs.getString("openai_key", "") ?: "") }
                 var model by remember { mutableStateOf(prefs.getString("openai_model", "") ?: "") }
                 var baseUrl by remember { mutableStateOf(prefs.getString("base_url", DEFAULT_BASE_URL) ?: DEFAULT_BASE_URL) }
+                var cfg by remember { mutableStateOf(loadCfg(prefs)) }
                 var showSettings by remember { mutableStateOf(false) }
                 Box(Modifier.fillMaxSize().background(Ink).systemBarsPadding()) {
                     if (showSettings) {
@@ -215,6 +250,8 @@ class MainActivity : ComponentActivity() {
                             keySaved = apiKey.isNotBlank(),
                             model = model,
                             baseUrl = baseUrl,
+                            voice = voice,
+                            cfg = cfg,
                             onName = { n ->
                                 val clean = n.trim().ifEmpty { "Chintu" }
                                 prefs.edit().putString("name", clean).apply()
@@ -237,14 +274,31 @@ class MainActivity : ComponentActivity() {
                                 prefs.edit().putString("base_url", clean).apply()
                                 baseUrl = clean
                             },
+                            onCfg = { c ->
+                                cfg = c
+                                saveCfg(prefs, c)
+                            },
                             back = { showSettings = false }
                         )
                     } else {
-                        MainScreen(name = name, baseUrl = baseUrl, apiKey = apiKey, model = model, openSettings = { showSettings = true })
+                        MainScreen(
+                            name = name,
+                            baseUrl = baseUrl,
+                            apiKey = apiKey,
+                            model = model,
+                            voice = voice,
+                            cfg = cfg,
+                            openSettings = { showSettings = true }
+                        )
                     }
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        voice.release()
+        super.onDestroy()
     }
 }
 
@@ -255,7 +309,7 @@ fun Orb(state: AiState) {
         initialValue = 0.94f,
         targetValue = 1.06f,
         animationSpec = infiniteRepeatable(
-            tween(if (state == AiState.THINKING) 700 else 2400, easing = FastOutSlowInEasing),
+            tween(if (state == AiState.THINKING || state == AiState.LISTENING) 700 else 2400, easing = FastOutSlowInEasing),
             RepeatMode.Reverse
         ),
         label = "p"
@@ -270,15 +324,78 @@ fun Orb(state: AiState) {
 }
 
 @Composable
-fun MainScreen(name: String, baseUrl: String, apiKey: String, model: String, openSettings: () -> Unit, vm: ChatVm = viewModel()) {
+fun MainScreen(
+    name: String,
+    baseUrl: String,
+    apiKey: String,
+    model: String,
+    voice: VoiceManager,
+    cfg: VoiceCfg,
+    openSettings: () -> Unit,
+    vm: ChatVm = viewModel()
+) {
     var input by remember { mutableStateOf("") }
+    val ctx = LocalContext.current
     val listState = rememberLazyListState()
+
+    SideEffect { voice.onState = { s -> vm.state = s } }
+
     LaunchedEffect(vm.messages.size) {
         if (vm.messages.isNotEmpty()) listState.animateScrollToItem(vm.messages.size - 1)
     }
+
+    fun doSend(text: String) {
+        if (vm.state == AiState.SPEAKING) voice.stopSpeaking()
+        vm.send(text, baseUrl, apiKey, model, name) { reply ->
+            if (cfg.voiceOn) {
+                val err = voice.speak(reply, cfg)
+                if (err != null) vm.notice(err, false)
+            }
+        }
+    }
+
+    fun startMic() {
+        vm.state = AiState.LISTENING
+        voice.startListening(
+            cfg.lang,
+            partial = { input = it },
+            done = { text ->
+                input = ""
+                vm.state = AiState.READY
+                doSend(text)
+            },
+            fail = { msg, serious ->
+                input = ""
+                vm.notice(msg, serious)
+            }
+        )
+    }
+
+    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startMic()
+        else vm.notice("Microphone permission was not allowed, so I can't listen. You can allow it in the phone's app settings.", true)
+    }
+
+    fun onMicClick() {
+        when (vm.state) {
+            AiState.LISTENING -> voice.stopListening()
+            AiState.SPEAKING -> voice.stopSpeaking()
+            AiState.THINKING -> {}
+            else -> {
+                if (ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startMic()
+                else permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+    }
+
     val host = hostOf(baseUrl)
     val status = if (vm.state == AiState.THINKING) "THINKING · contacting $host"
     else "${vm.state.name} · ONLINE AI"
+    val micLabel = when (vm.state) {
+        AiState.LISTENING -> "Stop"
+        AiState.SPEAKING -> "Quiet"
+        else -> "Mic"
+    }
     Column(Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             TextButton(onClick = openSettings) { Text("Settings", color = Dim) }
@@ -303,12 +420,15 @@ fun MainScreen(name: String, baseUrl: String, apiKey: String, model: String, ope
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(input, { input = it }, Modifier.weight(1f), placeholder = { Text("Message $name") }, singleLine = true)
             Spacer(Modifier.width(8.dp))
-            // Mic is disabled until voice is built in Phase 3 (no fake button).
-            OutlinedButton(onClick = {}, enabled = false) { Text("Mic") }
+            OutlinedButton(onClick = { onMicClick() }, enabled = vm.state != AiState.THINKING) { Text(micLabel) }
             Spacer(Modifier.width(4.dp))
             Button(
-                onClick = { vm.send(input, baseUrl, apiKey, model, name); input = "" },
-                enabled = vm.state != AiState.THINKING
+                onClick = {
+                    val t = input
+                    input = ""
+                    doSend(t)
+                },
+                enabled = vm.state != AiState.THINKING && vm.state != AiState.LISTENING
             ) { Text("Send") }
         }
     }
@@ -321,11 +441,14 @@ fun SettingsScreen(
     keySaved: Boolean,
     model: String,
     baseUrl: String,
+    voice: VoiceManager,
+    cfg: VoiceCfg,
     onName: (String) -> Unit,
     onSaveKey: (String) -> Unit,
     onClearKey: () -> Unit,
     onModel: (String) -> Unit,
     onBaseUrl: (String) -> Unit,
+    onCfg: (VoiceCfg) -> Unit,
     back: () -> Unit
 ) {
     var draft by remember { mutableStateOf(name) }
@@ -335,6 +458,10 @@ fun SettingsScreen(
     var modelList by remember { mutableStateOf<List<String>>(emptyList()) }
     var modelMsg by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
+    var rateDraft by remember { mutableStateOf(cfg.rate) }
+    var pitchDraft by remember { mutableStateOf(cfg.pitch) }
+    var voiceMsg by remember { mutableStateOf("") }
+    var voices by remember { mutableStateOf<List<String>>(emptyList()) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -343,58 +470,7 @@ fun SettingsScreen(
         Text("Assistant", fontSize = 22.sp, color = Color.White)
         OutlinedTextField(draft, { draft = it }, label = { Text("Assistant name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         Button(onClick = { onName(draft) }) { Text("Save name") }
-        Text("Online AI provider", fontSize = 22.sp, color = Color.White)
-        OutlinedTextField(urlDraft, { urlDraft = it }, label = { Text("Server address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Button(onClick = { onBaseUrl(urlDraft) }) { Text("Save address") }
-        Text("Saved address: $baseUrl", color = Dim)
-        Text(if (keySaved) "API key: saved on this phone" else "API key: not set", color = if (keySaved) Cyan else Red)
-        OutlinedTextField(
-            keyDraft, { keyDraft = it }, label = { Text("Paste API key") }, singleLine = true,
-            visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth()
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { onSaveKey(keyDraft); keyDraft = "" }, enabled = keyDraft.isNotBlank()) { Text("Save key") }
-            OutlinedButton(onClick = onClearKey, enabled = keySaved) { Text("Remove key") }
-        }
-        OutlinedTextField(modelDraft, { modelDraft = it }, label = { Text("Model ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Button(onClick = { onModel(modelDraft) }) { Text("Save model") }
-        Text("Saved model: ${if (model.isBlank()) "none" else model}", color = Dim)
-        OutlinedButton(
-            onClick = {
-                loading = true
-                modelMsg = "Checking..."
-                modelList = emptyList()
-                val u = baseUrl
-                val k = apiKey
-                Thread {
-                    var ids: List<String>? = null
-                    var err: String? = null
-                    try {
-                        ids = listModels(u, k)
-                    } catch (e: Exception) {
-                        err = describe(e)
-                    }
-                    val i = ids
-                    val er = err
-                    Handler(Looper.getMainLooper()).post {
-                        loading = false
-                        if (i != null) {
-                            modelList = i.take(40)
-                            modelMsg = if (i.isEmpty()) "No models are available to this key."
-                            else "Available to your key: ${i.size} (showing up to 40). Tap one to use it:"
-                        } else modelMsg = er ?: "Unknown error"
-                    }
-                }.start()
-            },
-            enabled = keySaved && !loading
-        ) { Text("Check available models") }
-        if (modelMsg.isNotEmpty()) Text(modelMsg, color = Dim)
-        modelList.forEach { id ->
-            TextButton(onClick = { modelDraft = id; onModel(id) }) { Text(id) }
-        }
-        Text(
-            "Your messages are sent to the server address above. A gateway service may forward them to the model provider. The key is stored in this app's private storage, not yet encrypted (planned for the Privacy phase).",
-            color = Dim
-        )
-    }
-}
+
+        Text("Voice", fontSize = 22.sp, color = Color.White)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(checked = cfg.voiceOn, onCheckedChange =
