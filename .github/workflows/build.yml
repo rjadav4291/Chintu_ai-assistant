@@ -18,7 +18,8 @@ jobs:
         run: gradle assembleDebug --console=plain > build.log 2>&1
       - name: Show errors
         if: failure()
-        run: grep -E "^e: |What went wrong" -A4 build.log | head -n 40
+        run: |
+          grep -E "^e: |What went wrong" -A4 build.log | head -n 40
       - uses: actions/upload-artifact@v4
         with:
           name: chintu-debug-apk
