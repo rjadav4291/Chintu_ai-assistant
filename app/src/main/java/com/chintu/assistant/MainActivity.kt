@@ -59,13 +59,24 @@ Do not imitate any fictional character.
 fun hostOf(baseUrl: String): String =
     try { URL(baseUrl).host } catch (e: Exception) { "online AI" }
 
+private fun readResponse(conn: HttpURLConnection): String {
+    val code = conn.responseCode
+    val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+    val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
+    if (code !in 200..299) {
+        val detail = try { JSONObject(text).getJSONObject("error").getString("message") } catch (e: Exception) { text.take(200) }
+        throw AiException("HTTP $code $detail")
+    }
+    return text
+}
+
 fun callAi(baseUrl: String, apiKey: String, model: String, system: String, turns: List<Pair<String, String>>): String {
     val msgs = JSONArray()
     msgs.put(JSONObject().put("role", "system").put("content", system))
     for ((role, text) in turns) msgs.put(JSONObject().put("role", role).put("content", text))
     val body = JSONObject()
         .put("model", model)
-        .put("max_completion_tokens", 200000)
+        .put("max_completion_tokens", 2000)
         .put("messages", msgs)
     val conn = URL(baseUrl.trim().trimEnd('/') + "/chat/completions").openConnection() as HttpURLConnection
     try {
@@ -76,17 +87,31 @@ fun callAi(baseUrl: String, apiKey: String, model: String, system: String, turns
         conn.setRequestProperty("Content-Type", "application/json")
         conn.setRequestProperty("Authorization", "Bearer $apiKey")
         conn.outputStream.use { it.write(body.toString().toByteArray()) }
-        val code = conn.responseCode
-        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-        val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
-        if (code !in 200..299) {
-            val detail = try { JSONObject(text).getJSONObject("error").getString("message") } catch (e: Exception) { text.take(200) }
-            throw AiException("HTTP $code $detail")
-        }
+        val text = readResponse(conn)
         val choices = JSONObject(text).getJSONArray("choices")
         val out = choices.getJSONObject(0).getJSONObject("message").optString("content", "").trim()
         if (out.isEmpty()) throw AiException("The AI returned an empty reply.")
         return out
+    } finally {
+        conn.disconnect()
+    }
+}
+
+fun listModels(baseUrl: String, apiKey: String): List<String> {
+    val conn = URL(baseUrl.trim().trimEnd('/') + "/models").openConnection() as HttpURLConnection
+    try {
+        conn.requestMethod = "GET"
+        conn.connectTimeout = 15000
+        conn.readTimeout = 30000
+        conn.setRequestProperty("Authorization", "Bearer $apiKey")
+        val text = readResponse(conn)
+        val data = JSONObject(text).getJSONArray("data")
+        val ids = mutableListOf<String>()
+        for (i in 0 until data.length()) {
+            val id = data.getJSONObject(i).optString("id", "")
+            if (id.isNotEmpty()) ids.add(id)
+        }
+        return ids
     } finally {
         conn.disconnect()
     }
@@ -130,7 +155,7 @@ class ChatVm : ViewModel() {
             return
         }
         if (model.isBlank()) {
-            fail("No model is set. Open Settings and enter the model ID.")
+            fail("No model is set. Open Settings and choose a model.")
             return
         }
         state = AiState.THINKING
@@ -171,6 +196,7 @@ class MainActivity : ComponentActivity() {
                     if (showSettings) {
                         SettingsScreen(
                             name = name,
+                            apiKey = apiKey,
                             keySaved = apiKey.isNotBlank(),
                             model = model,
                             baseUrl = baseUrl,
@@ -276,6 +302,7 @@ fun MainScreen(name: String, baseUrl: String, apiKey: String, model: String, ope
 @Composable
 fun SettingsScreen(
     name: String,
+    apiKey: String,
     keySaved: Boolean,
     model: String,
     baseUrl: String,
@@ -290,6 +317,9 @@ fun SettingsScreen(
     var keyDraft by remember { mutableStateOf("") }
     var modelDraft by remember { mutableStateOf(model) }
     var urlDraft by remember { mutableStateOf(baseUrl) }
+    var modelList by remember { mutableStateOf<List<String>>(emptyList()) }
+    var modelMsg by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -312,6 +342,40 @@ fun SettingsScreen(
         }
         OutlinedTextField(modelDraft, { modelDraft = it }, label = { Text("Model ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         Button(onClick = { onModel(modelDraft) }) { Text("Save model") }
+        Text("Saved model: ${if (model.isBlank()) "none" else model}", color = Dim)
+        OutlinedButton(
+            onClick = {
+                loading = true
+                modelMsg = "Checking..."
+                modelList = emptyList()
+                val u = baseUrl
+                val k = apiKey
+                Thread {
+                    var ids: List<String>? = null
+                    var err: String? = null
+                    try {
+                        ids = listModels(u, k)
+                    } catch (e: Exception) {
+                        err = describe(e)
+                    }
+                    val i = ids
+                    val er = err
+                    Handler(Looper.getMainLooper()).post {
+                        loading = false
+                        if (i != null) {
+                            modelList = i.take(40)
+                            modelMsg = if (i.isEmpty()) "No models are available to this key."
+                            else "Available to your key: ${i.size} (showing up to 40). Tap one to use it:"
+                        } else modelMsg = er ?: "Unknown error"
+                    }
+                }.start()
+            },
+            enabled = keySaved && !loading
+        ) { Text("Check available models") }
+        if (modelMsg.isNotEmpty()) Text(modelMsg, color = Dim)
+        modelList.forEach { id ->
+            TextButton(onClick = { modelDraft = id; onModel(id) }) { Text(id) }
+        }
         Text(
             "Your messages are sent to the server address above. A gateway service may forward them to the model provider. The key is stored in this app's private storage, not yet encrypted (planned for the Privacy phase).",
             color = Dim
