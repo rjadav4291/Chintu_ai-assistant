@@ -65,7 +65,7 @@ fun callAi(baseUrl: String, apiKey: String, model: String, system: String, turns
     for ((role, text) in turns) msgs.put(JSONObject().put("role", role).put("content", text))
     val body = JSONObject()
         .put("model", model)
-        .put("max_completion_tokens", 2000)
+        .put("max_completion_tokens", 200000)
         .put("messages", msgs)
     val conn = URL(baseUrl.trim().trimEnd('/') + "/chat/completions").openConnection() as HttpURLConnection
     try {
