@@ -59,15 +59,51 @@ Do not imitate any fictional character.
 fun hostOf(baseUrl: String): String =
     try { URL(baseUrl).host } catch (e: Exception) { "online AI" }
 
-private fun readResponse(conn: HttpURLConnection): String {
-    val code = conn.responseCode
-    val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-    val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
-    if (code !in 200..299) {
-        val detail = try { JSONObject(text).getJSONObject("error").getString("message") } catch (e: Exception) { text.take(200) }
-        throw AiException("HTTP $code $detail")
+// Sends one request. Follows redirects only to the SAME host over https,
+// so the API key is never sent to a different server.
+private fun request(url: String, method: String, apiKey: String, body: String?): String {
+    var current = URL(url.trim())
+    val originalHost = current.host
+    var hops = 0
+    while (true) {
+        val conn = current.openConnection() as HttpURLConnection
+        try {
+            conn.instanceFollowRedirects = false
+            conn.requestMethod = method
+            conn.connectTimeout = 15000
+            conn.readTimeout = 90000
+            conn.setRequestProperty("Authorization", "Bearer $apiKey")
+            if (body != null) {
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.outputStream.use { it.write(body.toByteArray()) }
+            }
+            val code = conn.responseCode
+            if (code == 301 || code == 302 || code == 307 || code == 308) {
+                val loc = conn.getHeaderField("Location")
+                    ?: throw AiException("HTTP $code The server asked to redirect but gave no address.")
+                val next = try { URL(current, loc) } catch (e: Exception) {
+                    throw AiException("HTTP $code The server sent a redirect address I could not read: $loc")
+                }
+                if (next.protocol != "https" || next.host != originalHost) {
+                    throw AiException("HTTP $code The server tried to redirect to ${next.protocol}://${next.host}. I did not follow it, to protect your key.")
+                }
+                hops++
+                if (hops > 3) throw AiException("Too many redirects.")
+                current = next
+                continue
+            }
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
+            if (code !in 200..299) {
+                val detail = try { JSONObject(text).getJSONObject("error").getString("message") } catch (e: Exception) { text.take(200) }
+                throw AiException("HTTP $code $detail")
+            }
+            return text
+        } finally {
+            conn.disconnect()
+        }
     }
-    return text
 }
 
 fun callAi(baseUrl: String, apiKey: String, model: String, system: String, turns: List<Pair<String, String>>): String {
@@ -78,49 +114,28 @@ fun callAi(baseUrl: String, apiKey: String, model: String, system: String, turns
         .put("model", model)
         .put("max_completion_tokens", 2000)
         .put("messages", msgs)
-    val conn = URL(baseUrl.trim().trimEnd('/') + "/chat/completions").openConnection() as HttpURLConnection
-    try {
-        conn.requestMethod = "POST"
-        conn.connectTimeout = 15000
-        conn.readTimeout = 90000
-        conn.doOutput = true
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.setRequestProperty("Authorization", "Bearer $apiKey")
-        conn.outputStream.use { it.write(body.toString().toByteArray()) }
-        val text = readResponse(conn)
-        val choices = JSONObject(text).getJSONArray("choices")
-        val out = choices.getJSONObject(0).getJSONObject("message").optString("content", "").trim()
-        if (out.isEmpty()) throw AiException("The AI returned an empty reply.")
-        return out
-    } finally {
-        conn.disconnect()
-    }
+    val text = request(baseUrl.trim().trimEnd('/') + "/chat/completions", "POST", apiKey, body.toString())
+    val choices = JSONObject(text).getJSONArray("choices")
+    val out = choices.getJSONObject(0).getJSONObject("message").optString("content", "").trim()
+    if (out.isEmpty()) throw AiException("The AI returned an empty reply.")
+    return out
 }
 
 fun listModels(baseUrl: String, apiKey: String): List<String> {
-    val conn = URL(baseUrl.trim().trimEnd('/') + "/models").openConnection() as HttpURLConnection
-    try {
-        conn.requestMethod = "GET"
-        conn.connectTimeout = 15000
-        conn.readTimeout = 30000
-        conn.setRequestProperty("Authorization", "Bearer $apiKey")
-        val text = readResponse(conn)
-        val data = JSONObject(text).getJSONArray("data")
-        val ids = mutableListOf<String>()
-        for (i in 0 until data.length()) {
-            val id = data.getJSONObject(i).optString("id", "")
-            if (id.isNotEmpty()) ids.add(id)
-        }
-        return ids
-    } finally {
-        conn.disconnect()
+    val text = request(baseUrl.trim().trimEnd('/') + "/models", "GET", apiKey, null)
+    val data = JSONObject(text).getJSONArray("data")
+    val ids = mutableListOf<String>()
+    for (i in 0 until data.length()) {
+        val id = data.getJSONObject(i).optString("id", "")
+        if (id.isNotEmpty()) ids.add(id)
     }
+    return ids
 }
 
 private fun describe(e: Exception): String = when (e) {
     is AiException -> "The AI service returned an error: ${e.message}"
-    is IOException -> "I couldn't connect to the AI service. No offline AI is available yet."
-    else -> "Something went wrong: ${e.message}"
+    is IOException -> "I couldn't connect to the AI service. No offline AI is available yet.\nDetails: ${e.javaClass.simpleName}: ${e.message}"
+    else -> "Something went wrong: ${e.javaClass.simpleName}: ${e.message}"
 }
 
 class ChatVm : ViewModel() {
@@ -331,6 +346,7 @@ fun SettingsScreen(
         Text("Online AI provider", fontSize = 22.sp, color = Color.White)
         OutlinedTextField(urlDraft, { urlDraft = it }, label = { Text("Server address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         Button(onClick = { onBaseUrl(urlDraft) }) { Text("Save address") }
+        Text("Saved address: $baseUrl", color = Dim)
         Text(if (keySaved) "API key: saved on this phone" else "API key: not set", color = if (keySaved) Cyan else Red)
         OutlinedTextField(
             keyDraft, { keyDraft = it }, label = { Text("Paste API key") }, singleLine = true,
