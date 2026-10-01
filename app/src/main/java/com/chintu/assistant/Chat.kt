@@ -19,15 +19,19 @@ enum class AiState { READY, LISTENING, THINKING, SPEAKING, OFFLINE, ERROR }
 data class Msg(val fromUser: Boolean, val text: String, val isError: Boolean = false)
 class AiException(message: String) : Exception(message)
 
-fun systemPrompt(name: String) = """
+fun systemPrompt(name: String, memory: String = ""): String {
+    val base = """
 You are $name, a personal assistant inside an Android app.
 Personality: friendly, calm, helpful, natural, slightly futuristic. Keep answers short, in short natural sentences. Explain step by step only when the question is complicated.
 Reply in the language the user writes in (Gujarati, Hindi, English or Hinglish).
 Your replies may be spoken aloud, so do not use emojis, markdown, bullet symbols or long lists.
-Truth rules: the app itself handles math, time, date, timers, stopwatch and notes before a message reaches you. You cannot do those yourself. If the user asks for one of them and you are seeing the message, say honestly that you did not do it and suggest a clearer phrase, like "set a timer for 5 minutes" or "note: buy milk".
-You have NO other tools yet. You cannot open apps, save memories, set reminders or alarms, search the web, check weather, or control the phone. Never claim you did any of these. If asked, say honestly that it is not available yet.
+Truth rules: the app itself handles math, time, date, timers, stopwatch, notes and memories before a message reaches you. You cannot do those yourself. If the user asks for one of them and you are seeing the message, say honestly that you did not do it and suggest a clearer phrase, like "set a timer for 5 minutes", "note: buy milk" or "remember that I prefer Gujarati". Never say you saved, changed or forgot a note or memory.
+You only remember what appears in the remembered list below, if there is one. Never claim to remember anything else about the user.
+You have NO other tools yet. You cannot open apps, set reminders or alarms, search the web, check weather, or control the phone. Never claim you did any of these. If asked, say honestly that it is not available yet.
 Do not imitate any fictional character.
 """.trimIndent()
+    return if (memory.isEmpty()) base else base + "\n\n" + memory
+}
 
 fun hostOf(baseUrl: String): String =
     try { URL(baseUrl).host } catch (e: Exception) { "online AI" }
@@ -144,7 +148,7 @@ class ChatVm : ViewModel() {
         return sub
     }
 
-    fun send(text: String, baseUrl: String, apiKey: String, model: String, name: String, onReply: (String) -> Unit) {
+    fun send(text: String, baseUrl: String, apiKey: String, model: String, name: String, memory: String, onReply: (String) -> Unit) {
         val t = text.trim()
         if (t.isEmpty() || state == AiState.THINKING) return
         messages.add(Msg(true, t))
@@ -159,7 +163,7 @@ class ChatVm : ViewModel() {
         source = "ONLINE AI"
         state = AiState.THINKING
         val turns = buildTurns()
-        val sys = systemPrompt(name)
+        val sys = systemPrompt(name, memory)
         Thread {
             var reply: String? = null
             var err: String? = null
