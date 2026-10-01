@@ -165,6 +165,7 @@ fun MainScreen(
     var input by remember { mutableStateOf("") }
     val ctx = LocalContext.current
     val tools = remember { Tools(ctx) }
+    val memory = remember { MemoryStore(ctx) }
     val listState = rememberLazyListState()
 
     SideEffect { voice.onState = { s -> vm.state = s } }
@@ -184,7 +185,7 @@ fun MainScreen(
         if (vm.state == AiState.SPEAKING) voice.stopSpeaking()
         if (vm.state == AiState.THINKING) return
         val local = try {
-            tools.handle(text)
+            memory.handle(text) ?: tools.handle(text)
         } catch (e: Exception) {
             "A local tool failed: ${e.message}"
         }
@@ -193,7 +194,7 @@ fun MainScreen(
             speakIfOn(local)
             return
         }
-        vm.send(text, baseUrl, apiKey, model, name) { reply -> speakIfOn(reply) }
+        vm.send(text, baseUrl, apiKey, model, name, memory.promptSection()) { reply -> speakIfOn(reply) }
     }
 
     fun startMic() {
