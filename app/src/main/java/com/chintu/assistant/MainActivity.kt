@@ -166,6 +166,7 @@ fun MainScreen(
     val ctx = LocalContext.current
     val tools = remember { Tools(ctx) }
     val memory = remember { MemoryStore(ctx) }
+    val launcher = remember { AppLauncher(ctx) }
     val listState = rememberLazyListState()
 
     SideEffect { voice.onState = { s -> vm.state = s } }
@@ -184,8 +185,9 @@ fun MainScreen(
     fun doSend(text: String) {
         if (vm.state == AiState.SPEAKING) voice.stopSpeaking()
         if (vm.state == AiState.THINKING) return
+        // Local handlers run first and never contact the online AI.
         val local = try {
-            memory.handle(text) ?: tools.handle(text)
+            memory.handle(text) ?: tools.handle(text) ?: launcher.handle(text)
         } catch (e: Exception) {
             "A local tool failed: ${e.message}"
         }
@@ -194,7 +196,9 @@ fun MainScreen(
             speakIfOn(local)
             return
         }
-        vm.send(text, baseUrl, apiKey, model, name, memory.promptSection()) { reply -> speakIfOn(reply) }
+        // Extra context for the online AI: what the app can do, plus saved memories (only if Memory is ON).
+        val extra = listOf(LAUNCHER_PROMPT, memory.promptSection()).filter { it.isNotEmpty() }.joinToString("\n\n")
+        vm.send(text, baseUrl, apiKey, model, name, extra) { reply -> speakIfOn(reply) }
     }
 
     fun startMic() {
