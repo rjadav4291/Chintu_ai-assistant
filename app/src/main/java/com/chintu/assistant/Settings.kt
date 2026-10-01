@@ -57,6 +57,8 @@ fun SettingsScreen(
             color = Dim
         )
 
+        MemorySection()
+
         Text("Voice", fontSize = 22.sp, color = Color.White)
         Row(verticalAlignment = Alignment.CenterVertically) {
             Switch(checked = cfg.voiceOn, onCheckedChange = { onCfg(cfg.copy(voiceOn = it)) })
