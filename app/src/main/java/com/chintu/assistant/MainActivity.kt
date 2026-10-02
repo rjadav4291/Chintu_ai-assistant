@@ -55,8 +55,12 @@ private fun saveCfg(p: SharedPreferences, c: VoiceCfg) {
         .apply()
 }
 
+private fun loadMode(p: SharedPreferences): AiMode =
+    try { AiMode.valueOf(p.getString("ai_mode", "AUTO") ?: "AUTO") } catch (e: Exception) { AiMode.AUTO }
+
 class MainActivity : ComponentActivity() {
     private lateinit var voice: VoiceManager
+    private val local: LocalAi = NoLocalAi
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -69,7 +73,9 @@ class MainActivity : ComponentActivity() {
                 var model by remember { mutableStateOf(prefs.getString("openai_model", "") ?: "") }
                 var baseUrl by remember { mutableStateOf(prefs.getString("base_url", DEFAULT_BASE_URL) ?: DEFAULT_BASE_URL) }
                 var cfg by remember { mutableStateOf(loadCfg(prefs)) }
+                var mode by remember { mutableStateOf(loadMode(prefs)) }
                 var showSettings by remember { mutableStateOf(false) }
+                var showAi by remember { mutableStateOf(false) }
                 Box(Modifier.fillMaxSize().background(Ink).systemBarsPadding()) {
                     if (showSettings) {
                         SettingsScreen(
@@ -108,6 +114,17 @@ class MainActivity : ComponentActivity() {
                             },
                             back = { showSettings = false }
                         )
+                    } else if (showAi) {
+                        AiScreen(
+                            mode = mode,
+                            onMode = { m ->
+                                if (prefs.edit().putString("ai_mode", m.name).commit()) mode = m
+                            },
+                            local = local,
+                            host = hostOf(baseUrl),
+                            keySaved = apiKey.isNotBlank(),
+                            back = { showAi = false }
+                        )
                     } else {
                         MainScreen(
                             name = name,
@@ -116,7 +133,10 @@ class MainActivity : ComponentActivity() {
                             model = model,
                             voice = voice,
                             cfg = cfg,
-                            openSettings = { showSettings = true }
+                            mode = mode,
+                            local = local,
+                            openSettings = { showSettings = true },
+                            openAi = { showAi = true }
                         )
                     }
                 }
@@ -159,7 +179,10 @@ fun MainScreen(
     model: String,
     voice: VoiceManager,
     cfg: VoiceCfg,
+    mode: AiMode,
+    local: LocalAi,
     openSettings: () -> Unit,
+    openAi: () -> Unit,
     vm: ChatVm = viewModel()
 ) {
     var input by remember { mutableStateOf("") }
@@ -185,20 +208,20 @@ fun MainScreen(
     fun doSend(text: String) {
         if (vm.state == AiState.SPEAKING) voice.stopSpeaking()
         if (vm.state == AiState.THINKING) return
-        // Local handlers run first and never contact the online AI.
-        val local = try {
+        // Local handlers run first and never contact any AI.
+        val localReply = try {
             memory.handle(text) ?: tools.handle(text) ?: launcher.handle(text)
         } catch (e: Exception) {
             "A local tool failed: ${e.message}"
         }
-        if (local != null) {
-            vm.addLocal(text.trim(), local)
-            speakIfOn(local)
+        if (localReply != null) {
+            vm.addLocal(text.trim(), localReply)
+            speakIfOn(localReply)
             return
         }
-        // Extra context for the online AI: what the app can do, plus saved memories (only if Memory is ON).
+        // Extra context for the AI: what the app can do, plus saved memories (only if Memory is ON).
         val extra = listOf(LAUNCHER_PROMPT, memory.promptSection()).filter { it.isNotEmpty() }.joinToString("\n\n")
-        vm.send(text, baseUrl, apiKey, model, name, extra) { reply -> speakIfOn(reply) }
+        vm.sendRouted(text, mode, local, baseUrl, apiKey, model, name, extra) { reply -> speakIfOn(reply) }
     }
 
     fun startMic() {
@@ -236,15 +259,21 @@ fun MainScreen(
     }
 
     val host = hostOf(baseUrl)
-    val status = if (vm.state == AiState.THINKING) "THINKING · contacting $host"
-    else "${vm.state.name} · ${vm.source}"
+    val hasReply = vm.messages.any { !it.fromUser && !it.isError }
+    val last = if (hasReply) " · last: ${vm.source}" else ""
+    val status = if (vm.state == AiState.THINKING) {
+        if (mode == AiMode.OFFLINE) "THINKING · on-device" else "THINKING · contacting $host"
+    } else {
+        "${vm.state.name} · ${mode.label}$last"
+    }
     val micLabel = when (vm.state) {
         AiState.LISTENING -> "Stop"
         AiState.SPEAKING -> "Quiet"
         else -> "Mic"
     }
     Column(Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(onClick = openAi) { Text("Mode: ${mode.label}", color = Cyan) }
             TextButton(onClick = openSettings) { Text("Settings", color = Dim) }
         }
         Orb(vm.state)
