@@ -15,11 +15,11 @@ jobs:
         with:
           gradle-version: 8.7
       - name: Build
-        run: gradle assembleDebug --console=plain > build.log 2>&1
+        run: gradle assembleDebug --console=plain --stacktrace > build.log 2>&1
       - name: Show errors
         if: failure()
         run: |
-          grep -E "^e: |What went wrong" -A16 build.log | head -n 70
+          grep -E "^e: |What went wrong|Caused by" -A3 build.log | head -n 80
       - uses: actions/upload-artifact@v4
         with:
           name: chintu-debug-apk
