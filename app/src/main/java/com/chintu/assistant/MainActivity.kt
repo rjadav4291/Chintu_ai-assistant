@@ -71,7 +71,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(background = Ink, surface = Ink, primary = Cyan)) {
                 var name by remember { mutableStateOf(prefs.getString("name", "Chintu") ?: "Chintu") }
-                var apiKey by remember { mutableStateOf(prefs.getString("openai_key", "") ?: "") }
+                var apiKey by remember { mutableStateOf(KeyVault.load(prefs)) }
                 var model by remember { mutableStateOf(prefs.getString("openai_model", "") ?: "") }
                 var baseUrl by remember { mutableStateOf(prefs.getString("base_url", DEFAULT_BASE_URL) ?: DEFAULT_BASE_URL) }
                 var cfg by remember { mutableStateOf(loadCfg(prefs)) }
@@ -97,11 +97,10 @@ class MainActivity : ComponentActivity() {
                                 name = clean
                             },
                             onSaveKey = { k ->
-                                prefs.edit().putString("openai_key", k.trim()).apply()
-                                apiKey = k.trim()
+                                if (KeyVault.save(prefs, k)) apiKey = k.trim()
                             },
                             onClearKey = {
-                                prefs.edit().remove("openai_key").apply()
+                                KeyVault.clear(prefs)
                                 apiKey = ""
                             },
                             onModel = { m ->
@@ -143,7 +142,7 @@ class MainActivity : ComponentActivity() {
                             keySaved = apiKey.isNotBlank(),
                             ai = liteRt,
                             onClearKey = {
-                                prefs.edit().remove("openai_key").apply()
+                                KeyVault.clear(prefs)
                                 apiKey = ""
                             },
                             back = { showPrivacy = false }
@@ -288,7 +287,8 @@ fun MainScreen(
             fail = { msg, serious ->
                 input = ""
                 vm.notice(msg, serious)
-            }
+            },
+            onDeviceOnly = privateOn
         )
     }
 
