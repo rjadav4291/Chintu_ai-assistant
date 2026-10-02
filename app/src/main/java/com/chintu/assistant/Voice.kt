@@ -2,6 +2,7 @@ package com.chintu.assistant
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -131,6 +132,10 @@ class VoiceManager(private val ctx: Context) {
 
     fun recognitionAvailable(): Boolean = SpeechRecognizer.isRecognitionAvailable(ctx)
 
+    // True if this phone can recognise speech on the device itself (needs Android 13+ and the speech service's offline support).
+    fun onDeviceAvailable(): Boolean =
+        Build.VERSION.SDK_INT >= 33 && SpeechRecognizer.isOnDeviceRecognitionAvailable(ctx)
+
     private fun recogTag(lang: Lang): String? = when (lang) {
         Lang.AUTO -> null
         Lang.GUJARATI -> "gu-IN"
@@ -150,19 +155,27 @@ class VoiceManager(private val ctx: Context) {
         else -> "Speech recognition failed (code $code)."
     }
 
+    // onDeviceOnly = true (Private Mode): listen only with the on-device recogniser, or refuse. Never falls back to online.
     fun startListening(
         lang: Lang,
         partial: (String) -> Unit,
         done: (String) -> Unit,
-        fail: (String, Boolean) -> Unit
+        fail: (String, Boolean) -> Unit,
+        onDeviceOnly: Boolean = false
     ) {
         silence()
-        if (!recognitionAvailable()) {
+        if (onDeviceOnly) {
+            if (!onDeviceAvailable()) {
+                fail("Private Mode: this phone can't listen on-device, so I won't listen. Type your message, or turn Private Mode off.", false)
+                return
+            }
+        } else if (!recognitionAvailable()) {
             fail("Speech recognition is not available on this phone.", true)
             return
         }
         recognizer?.destroy()
-        val rec = SpeechRecognizer.createSpeechRecognizer(ctx)
+        val rec = if (onDeviceOnly) SpeechRecognizer.createOnDeviceSpeechRecognizer(ctx)
+        else SpeechRecognizer.createSpeechRecognizer(ctx)
         recognizer = rec
         rec.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {}
@@ -173,7 +186,10 @@ class VoiceManager(private val ctx: Context) {
             override fun onEvent(eventType: Int, params: Bundle?) {}
             override fun onError(error: Int) {
                 val serious = error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT
-                fail(errorText(error), serious)
+                val hint = if (onDeviceOnly && (error == 12 || error == 13))
+                    " For Private Mode, download this language for offline use in your phone's speech settings."
+                else ""
+                fail(errorText(error) + hint, serious)
             }
             override fun onResults(results: Bundle?) {
                 val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
