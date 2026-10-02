@@ -60,7 +60,7 @@ private fun loadMode(p: SharedPreferences): AiMode =
 
 class MainActivity : ComponentActivity() {
     private lateinit var voice: VoiceManager
-    private val local: LocalAi = NoLocalAi
+    private val liteRt by lazy { LiteRtLocalAi(applicationContext) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -76,6 +76,7 @@ class MainActivity : ComponentActivity() {
                 var mode by remember { mutableStateOf(loadMode(prefs)) }
                 var showSettings by remember { mutableStateOf(false) }
                 var showAi by remember { mutableStateOf(false) }
+                var showModel by remember { mutableStateOf(false) }
                 Box(Modifier.fillMaxSize().background(Ink).systemBarsPadding()) {
                     if (showSettings) {
                         SettingsScreen(
@@ -120,11 +121,13 @@ class MainActivity : ComponentActivity() {
                             onMode = { m ->
                                 if (prefs.edit().putString("ai_mode", m.name).commit()) mode = m
                             },
-                            local = local,
+                            local = liteRt,
                             host = hostOf(baseUrl),
                             keySaved = apiKey.isNotBlank(),
                             back = { showAi = false }
                         )
+                    } else if (showModel) {
+                        ModelScreen(ai = liteRt, back = { showModel = false })
                     } else {
                         MainScreen(
                             name = name,
@@ -134,9 +137,10 @@ class MainActivity : ComponentActivity() {
                             voice = voice,
                             cfg = cfg,
                             mode = mode,
-                            local = local,
+                            local = liteRt,
                             openSettings = { showSettings = true },
-                            openAi = { showAi = true }
+                            openAi = { showAi = true },
+                            openModel = { showModel = true }
                         )
                     }
                 }
@@ -144,8 +148,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStop() {
+        liteRt.releaseAsync()
+        super.onStop()
+    }
+
     override fun onDestroy() {
         voice.release()
+        liteRt.releaseAsync()
         super.onDestroy()
     }
 }
@@ -183,6 +193,7 @@ fun MainScreen(
     local: LocalAi,
     openSettings: () -> Unit,
     openAi: () -> Unit,
+    openModel: () -> Unit,
     vm: ChatVm = viewModel()
 ) {
     var input by remember { mutableStateOf("") }
@@ -274,6 +285,7 @@ fun MainScreen(
     Column(Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(onClick = openAi) { Text("Mode: ${mode.label}", color = Cyan) }
+            TextButton(onClick = openModel) { Text("Model", color = Cyan) }
             TextButton(onClick = openSettings) { Text("Settings", color = Dim) }
         }
         Orb(vm.state)
