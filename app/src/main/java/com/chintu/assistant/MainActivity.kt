@@ -36,6 +36,8 @@ val Cyan = Color(0xFF4FD1FF)
 val Violet = Color(0xFF8B7CFF)
 val Red = Color(0xFFFF5D73)
 val Dim = Color(0xFF9AA6BD)
+val Amber = Color(0xFFFFB84D)
+val Mint = Color(0xFF6DFFB0)
 
 private fun loadCfg(p: SharedPreferences): VoiceCfg = VoiceCfg(
     lang = try { Lang.valueOf(p.getString("lang", "AUTO") ?: "AUTO") } catch (e: Exception) { Lang.AUTO },
@@ -74,9 +76,11 @@ class MainActivity : ComponentActivity() {
                 var baseUrl by remember { mutableStateOf(prefs.getString("base_url", DEFAULT_BASE_URL) ?: DEFAULT_BASE_URL) }
                 var cfg by remember { mutableStateOf(loadCfg(prefs)) }
                 var mode by remember { mutableStateOf(loadMode(prefs)) }
+                var privateOn by remember { mutableStateOf(prefs.getBoolean("private_mode", false)) }
                 var showSettings by remember { mutableStateOf(false) }
                 var showAi by remember { mutableStateOf(false) }
                 var showModel by remember { mutableStateOf(false) }
+                var showPrivacy by remember { mutableStateOf(false) }
                 Box(Modifier.fillMaxSize().background(Ink).systemBarsPadding()) {
                     if (showSettings) {
                         SettingsScreen(
@@ -128,6 +132,22 @@ class MainActivity : ComponentActivity() {
                         )
                     } else if (showModel) {
                         ModelScreen(ai = liteRt, back = { showModel = false })
+                    } else if (showPrivacy) {
+                        PrivacyScreen(
+                            privateOn = privateOn,
+                            onPrivate = { on ->
+                                if (prefs.edit().putBoolean("private_mode", on).commit()) privateOn = on
+                            },
+                            mode = mode,
+                            host = hostOf(baseUrl),
+                            keySaved = apiKey.isNotBlank(),
+                            ai = liteRt,
+                            onClearKey = {
+                                prefs.edit().remove("openai_key").apply()
+                                apiKey = ""
+                            },
+                            back = { showPrivacy = false }
+                        )
                     } else {
                         MainScreen(
                             name = name,
@@ -137,10 +157,12 @@ class MainActivity : ComponentActivity() {
                             voice = voice,
                             cfg = cfg,
                             mode = mode,
+                            privateOn = privateOn,
                             local = liteRt,
                             openSettings = { showSettings = true },
                             openAi = { showAi = true },
-                            openModel = { showModel = true }
+                            openModel = { showModel = true },
+                            openPrivacy = { showPrivacy = true }
                         )
                     }
                 }
@@ -190,10 +212,12 @@ fun MainScreen(
     voice: VoiceManager,
     cfg: VoiceCfg,
     mode: AiMode,
+    privateOn: Boolean,
     local: LocalAi,
     openSettings: () -> Unit,
     openAi: () -> Unit,
     openModel: () -> Unit,
+    openPrivacy: () -> Unit,
     vm: ChatVm = viewModel()
 ) {
     var input by remember { mutableStateOf("") }
@@ -202,6 +226,12 @@ fun MainScreen(
     val memory = remember { MemoryStore(ctx) }
     val launcher = remember { AppLauncher(ctx) }
     val listState = rememberLazyListState()
+
+    // Private Mode forces OFFLINE: the online AI is never contacted.
+    val effectiveMode = if (privateOn) AiMode.OFFLINE else mode
+    val onlineReady = apiKey.isNotBlank() && model.isNotBlank()
+    val onlinePath = onlineReady && effectiveMode != AiMode.OFFLINE
+    val host = hostOf(baseUrl)
 
     SideEffect { voice.onState = { s -> vm.state = s } }
 
@@ -217,6 +247,7 @@ fun MainScreen(
     }
 
     fun doSend(text: String) {
+        if (text.isBlank()) return
         if (vm.state == AiState.SPEAKING) voice.stopSpeaking()
         if (vm.state == AiState.THINKING) return
         // Local handlers run first and never contact any AI.
@@ -230,9 +261,18 @@ fun MainScreen(
             speakIfOn(localReply)
             return
         }
+        if (privateOn && !local.available) {
+            vm.messages.add(Msg(true, text.trim()))
+            vm.notice(
+                "Private Mode is ON, so I only use the on-device AI, and it isn't ready (${local.status().trimEnd('.')}). Nothing was sent online. Turn Private Mode off in Privacy, or set up the offline model in Model.",
+                true
+            )
+            return
+        }
+        if (onlinePath) PrivacyLog.record(host)
         // Extra context for the AI: what the app can do, plus saved memories (only if Memory is ON).
         val extra = listOf(LAUNCHER_PROMPT, memory.promptSection()).filter { it.isNotEmpty() }.joinToString("\n\n")
-        vm.sendRouted(text, mode, local, baseUrl, apiKey, model, name, extra) { reply -> speakIfOn(reply) }
+        vm.sendRouted(text, effectiveMode, local, baseUrl, apiKey, model, name, extra) { reply -> speakIfOn(reply) }
     }
 
     fun startMic() {
@@ -269,28 +309,37 @@ fun MainScreen(
         }
     }
 
-    val host = hostOf(baseUrl)
+    val modeLabel = if (privateOn) "PRIVATE" else mode.label
     val hasReply = vm.messages.any { !it.fromUser && !it.isError }
     val last = if (hasReply) " · last: ${vm.source}" else ""
     val status = if (vm.state == AiState.THINKING) {
-        if (mode == AiMode.OFFLINE) "THINKING · on-device" else "THINKING · contacting $host"
+        if (onlinePath) "● ONLINE · contacting $host" else "THINKING · on-device"
     } else {
-        "${vm.state.name} · ${mode.label}$last"
+        "${vm.state.name} · $modeLabel$last"
+    }
+    val statusColor = when {
+        vm.state == AiState.ERROR -> Red
+        vm.state == AiState.THINKING && onlinePath -> Amber
+        else -> Cyan
     }
     val micLabel = when (vm.state) {
         AiState.LISTENING -> "Stop"
         AiState.SPEAKING -> "Quiet"
         else -> "Mic"
     }
+    val pad = PaddingValues(horizontal = 8.dp)
     Column(Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = openAi) { Text("Mode: ${mode.label}", color = Cyan) }
-            TextButton(onClick = openModel) { Text("Model", color = Cyan) }
-            TextButton(onClick = openSettings) { Text("Settings", color = Dim) }
+            TextButton(onClick = openAi, contentPadding = pad) {
+                Text("Mode: $modeLabel", color = if (privateOn) Mint else Cyan, fontSize = 13.sp)
+            }
+            TextButton(onClick = openModel, contentPadding = pad) { Text("Model", color = Cyan, fontSize = 13.sp) }
+            TextButton(onClick = openPrivacy, contentPadding = pad) { Text("Privacy", color = Mint, fontSize = 13.sp) }
+            TextButton(onClick = openSettings, contentPadding = pad) { Text("Settings", color = Dim, fontSize = 13.sp) }
         }
         Orb(vm.state)
         Text(name, fontSize = 30.sp, color = Color.White)
-        Text(status, color = if (vm.state == AiState.ERROR) Red else Cyan, fontSize = 13.sp)
+        Text(status, color = statusColor, fontSize = 13.sp)
         Spacer(Modifier.height(12.dp))
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(vm.messages) { m ->
