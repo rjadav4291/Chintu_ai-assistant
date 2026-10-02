@@ -12,7 +12,10 @@
         <package android:name="com.whatsapp"/>
         <package android:name="com.google.android.apps.maps"/>
     </queries>
-    <application android:label="Chintu" android:theme="@android:style/Theme.Material.NoActionBar">
+    <application
+        android:allowBackup="false"
+        android:label="Chintu"
+        android:theme="@android:style/Theme.Material.NoActionBar">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
