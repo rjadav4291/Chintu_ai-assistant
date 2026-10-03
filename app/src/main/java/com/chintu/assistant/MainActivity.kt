@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -220,13 +222,15 @@ fun MainScreen(
     vm: ChatVm = viewModel()
 ) {
     var input by remember { mutableStateOf("") }
+    var toolHost by remember { mutableStateOf("") }
     val ctx = LocalContext.current
     val tools = remember { Tools(ctx) }
     val memory = remember { MemoryStore(ctx) }
     val launcher = remember { AppLauncher(ctx) }
+    val online = remember { OnlineTools(ctx) }
     val listState = rememberLazyListState()
 
-    // Private Mode forces OFFLINE: the online AI is never contacted.
+    // Private Mode forces OFFLINE: neither the online AI nor the online tools are used.
     val effectiveMode = if (privateOn) AiMode.OFFLINE else mode
     val onlineReady = apiKey.isNotBlank() && model.isNotBlank()
     val onlinePath = onlineReady && effectiveMode != AiMode.OFFLINE
@@ -245,19 +249,59 @@ fun MainScreen(
         }
     }
 
+    fun runOnlineTool(text: String, req: Req) {
+        vm.messages.add(Msg(true, text.trim()))
+        vm.state = AiState.THINKING
+        val h = online.hostFor(req)
+        toolHost = h
+        PrivacyLog.record(h)
+        Thread {
+            val out = online.run(req)
+            Handler(Looper.getMainLooper()).post {
+                toolHost = ""
+                if (out.ok) {
+                    vm.messages.add(Msg(false, out.text))
+                    vm.source = "WEB: $h"
+                    vm.state = AiState.READY
+                    speakIfOn(out.text.substringBefore("\n\n"))
+                } else {
+                    vm.notice(out.text, true)
+                }
+            }
+        }.start()
+    }
+
     fun doSend(text: String) {
         if (text.isBlank()) return
         if (vm.state == AiState.SPEAKING) voice.stopSpeaking()
         if (vm.state == AiState.THINKING) return
-        // Local handlers run first and never contact any AI.
+        // Local handlers run first and never contact any AI or website.
         val localReply = try {
-            memory.handle(text) ?: tools.handle(text) ?: launcher.handle(text)
+            memory.handle(text) ?: tools.handle(text) ?: launcher.handle(text) ?: online.setCity(text)
         } catch (e: Exception) {
             "A local tool failed: ${e.message}"
         }
         if (localReply != null) {
             vm.addLocal(text.trim(), localReply)
             speakIfOn(localReply)
+            return
+        }
+        // Weather, Wikipedia and web search.
+        val req = try { online.parse(text) } catch (e: Exception) { null }
+        if (req != null) {
+            if (req.kind == "weather" && req.arg.isBlank()) {
+                val ask = "Which city? Say for example: weather in Ahmedabad. You can also say: set my city to Ahmedabad."
+                vm.addLocal(text.trim(), ask)
+                speakIfOn(ask)
+                return
+            }
+            if (effectiveMode == AiMode.OFFLINE) {
+                val refuse = "That needs the internet, but ${if (privateOn) "Private Mode" else "OFFLINE mode"} is on, so I did not go online. Change it in Mode or Privacy."
+                vm.addLocal(text.trim(), refuse)
+                speakIfOn(refuse)
+                return
+            }
+            runOnlineTool(text, req)
             return
         }
         if (privateOn && !local.available) {
@@ -270,7 +314,8 @@ fun MainScreen(
         }
         if (onlinePath) PrivacyLog.record(host)
         // Extra context for the AI: what the app can do, plus saved memories (only if Memory is ON).
-        val extra = listOf(LAUNCHER_PROMPT, memory.promptSection()).filter { it.isNotEmpty() }.joinToString("\n\n")
+        val extra = listOf(LAUNCHER_PROMPT, ONLINE_TOOLS_PROMPT, memory.promptSection())
+            .filter { it.isNotEmpty() }.joinToString("\n\n")
         vm.sendRouted(text, effectiveMode, local, baseUrl, apiKey, model, name, extra) { reply -> speakIfOn(reply) }
     }
 
@@ -312,14 +357,17 @@ fun MainScreen(
     val modeLabel = if (privateOn) "PRIVATE" else mode.label
     val hasReply = vm.messages.any { !it.fromUser && !it.isError }
     val last = if (hasReply) " · last: ${vm.source}" else ""
+    val thinkingOnline = toolHost.isNotEmpty() || onlinePath
     val status = if (vm.state == AiState.THINKING) {
-        if (onlinePath) "● ONLINE · contacting $host" else "THINKING · on-device"
+        if (toolHost.isNotEmpty()) "● ONLINE · contacting $toolHost"
+        else if (onlinePath) "● ONLINE · contacting $host"
+        else "THINKING · on-device"
     } else {
         "${vm.state.name} · $modeLabel$last"
     }
     val statusColor = when {
         vm.state == AiState.ERROR -> Red
-        vm.state == AiState.THINKING && onlinePath -> Amber
+        vm.state == AiState.THINKING && thinkingOnline -> Amber
         else -> Cyan
     }
     val micLabel = when (vm.state) {
