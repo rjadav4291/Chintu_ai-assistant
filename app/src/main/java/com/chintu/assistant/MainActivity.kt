@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -69,6 +70,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         voice = VoiceManager(applicationContext)
+        // Put saved reminders back with Android (alarms are lost after a restart or a force-stop).
+        try {
+            Reminders.rescheduleAll(applicationContext)
+        } catch (e: Exception) {
+        }
         val prefs = getSharedPreferences("chintu", Context.MODE_PRIVATE)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(background = Ink, surface = Ink, primary = Cyan)) {
@@ -84,6 +90,7 @@ class MainActivity : ComponentActivity() {
                 var showModel by remember { mutableStateOf(false) }
                 var showPrivacy by remember { mutableStateOf(false) }
                 var showSkills by remember { mutableStateOf(false) }
+                var showReminders by remember { mutableStateOf(false) }
                 Box(Modifier.fillMaxSize().background(Ink).systemBarsPadding()) {
                     if (showSettings) {
                         SettingsScreen(
@@ -136,6 +143,8 @@ class MainActivity : ComponentActivity() {
                         ModelScreen(ai = liteRt, back = { showModel = false })
                     } else if (showSkills) {
                         SkillsScreen(back = { showSkills = false })
+                    } else if (showReminders) {
+                        RemindersScreen(back = { showReminders = false })
                     } else if (showPrivacy) {
                         PrivacyScreen(
                             privateOn = privateOn,
@@ -167,7 +176,8 @@ class MainActivity : ComponentActivity() {
                             openAi = { showAi = true },
                             openModel = { showModel = true },
                             openPrivacy = { showPrivacy = true },
-                            openSkills = { showSkills = true }
+                            openSkills = { showSkills = true },
+                            openReminders = { showReminders = true }
                         )
                     }
                 }
@@ -224,6 +234,7 @@ fun MainScreen(
     openModel: () -> Unit,
     openPrivacy: () -> Unit,
     openSkills: () -> Unit,
+    openReminders: () -> Unit,
     vm: ChatVm = viewModel()
 ) {
     var input by remember { mutableStateOf("") }
@@ -235,6 +246,7 @@ fun MainScreen(
     val launcher = remember { AppLauncher(ctx) }
     val online = remember { OnlineTools(ctx) }
     val skills = remember { SkillSettings(ctx) }
+    val reminders = remember { ReminderSkill(ctx) }
     val listState = rememberLazyListState()
 
     // Private Mode forces OFFLINE: neither the online AI nor the online tools are used.
@@ -253,6 +265,15 @@ fun MainScreen(
         if (cfg.voiceOn) {
             val err = voice.speak(text, cfg)
             if (err != null) vm.notice(err, false)
+        }
+    }
+
+    val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            vm.messages.add(Msg(false, "Notifications are allowed now. Please say your reminder again."))
+            vm.state = AiState.READY
+        } else {
+            vm.notice("Notifications are not allowed, so I can't set reminders. You can allow them in the phone's app settings.", true)
         }
     }
 
@@ -282,7 +303,21 @@ fun MainScreen(
         if (text.isBlank()) return
         if (vm.state == AiState.SPEAKING) voice.stopSpeaking()
         if (vm.state == AiState.THINKING) return
-        // Local skills run first and never contact any AI or website. A skill that is switched off is skipped.
+        // Reminders first, so that "remember to ..." and "remind me ..." are understood correctly.
+        val rr = try {
+            if (skills.enabled("reminders")) reminders.handle(text, Reminders.notifOk(ctx)) else null
+        } catch (e: Exception) {
+            RemResult("A reminder tool failed: ${e.message}")
+        }
+        if (rr != null) {
+            vm.addLocal(text.trim(), rr.reply)
+            speakIfOn(rr.reply)
+            if (rr.needPermission && Build.VERSION.SDK_INT >= 33) {
+                notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            return
+        }
+        // Local skills run next and never contact any AI or website. A skill that is switched off is skipped.
         val localReply = try {
             (if (skills.enabled("memory")) memory.handle(text) else null)
                 ?: tools.handle(text) { id -> skills.enabled(id) }
@@ -408,6 +443,10 @@ fun MainScreen(
             Box {
                 TextButton(onClick = { menuOpen = true }, contentPadding = pad) { Text("More", color = Dim, fontSize = 13.sp) }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(text = { Text("Reminders") }, onClick = {
+                        menuOpen = false
+                        openReminders()
+                    })
                     DropdownMenuItem(text = { Text("Model") }, onClick = {
                         menuOpen = false
                         openModel()
@@ -423,32 +462,4 @@ fun MainScreen(
         Text(name, fontSize = 30.sp, color = Color.White)
         Text(status, color = statusColor, fontSize = 13.sp)
         Spacer(Modifier.height(12.dp))
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(vm.messages) { m ->
-                Box(Modifier.fillMaxWidth(), contentAlignment = if (m.fromUser) Alignment.CenterEnd else Alignment.CenterStart) {
-                    Text(
-                        m.text,
-                        color = if (m.isError) Red else Color.White,
-                        modifier = Modifier.clip(RoundedCornerShape(16.dp))
-                            .background(if (m.fromUser) Cyan.copy(.22f) else Glass)
-                            .padding(12.dp)
-                    )
-                }
-            }
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(input, { input = it }, Modifier.weight(1f), placeholder = { Text("Message $name") }, singleLine = true)
-            Spacer(Modifier.width(8.dp))
-            OutlinedButton(onClick = { onMicClick() }, enabled = vm.state != AiState.THINKING) { Text(micLabel) }
-            Spacer(Modifier.width(4.dp))
-            Button(
-                onClick = {
-                    val t = input
-                    input = ""
-                    doSend(t)
-                },
-                enabled = vm.state != AiState.THINKING && vm.state != AiState.LISTENING
-            ) { Text("Send") }
-        }
-    }
-}
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listSt
