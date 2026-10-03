@@ -2,11 +2,7 @@ package com.chintu.assistant
 
 import android.Manifest
 import android.app.AlarmManager
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.PendingIntent
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -32,7 +28,6 @@ data class Reminder(
 
 object Reminders {
     const val ACTION = "com.chintu.assistant.REMINDER"
-    private const val CHANNEL = "reminders"
     private val dayNames = listOf("", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("chintu_tools", Context.MODE_PRIVATE)
@@ -185,7 +180,7 @@ object Reminders {
                 continue
             }
             if (r.type == "once" && r.at <= now) {
-                notify(ctx, r, "Missed reminder")
+                ReminderNotifier.show(ctx, r, "Missed reminder")
                 changed = true
                 continue
             }
@@ -194,5 +189,6 @@ object Reminders {
         }
         if (changed) save(ctx, keep)
     }
+}
 
-    fun notify(ctx: Context, r: Reminder, titl
+// END OF FILE
