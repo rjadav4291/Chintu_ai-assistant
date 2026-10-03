@@ -10,8 +10,8 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-// Keeps the API key encrypted (AES-256-GCM) with a key held by the Android Keystore.
-// The saved text starts with "enc1:". An old plain-text key is encrypted the first time it is read.
+// Keeps keys encrypted (AES-256-GCM) with a key held by the Android Keystore.
+// The saved text starts with "enc1:". An old plain-text value is encrypted the first time it is read.
 object KeyVault {
     private const val ALIAS = "chintu_api_key"
     private const val NAME = "openai_key"
@@ -54,29 +54,29 @@ object KeyVault {
         }
     }
 
-    // Returns the saved key, or "" if none (or if it can't be decrypted).
-    fun load(p: SharedPreferences): String {
-        val v = p.getString(NAME, null) ?: return ""
+    // Returns the saved value, or "" if none (or if it can't be decrypted).
+    fun load(p: SharedPreferences, name: String = NAME): String {
+        val v = p.getString(name, null) ?: return ""
         if (v.startsWith(PREFIX)) return decrypt(v) ?: ""
         if (v.isBlank()) return ""
         try {
             val e = encrypt(v)
-            if (decrypt(e) == v) p.edit().putString(NAME, e).commit()
+            if (decrypt(e) == v) p.edit().putString(name, e).commit()
         } catch (ex: Exception) {
         }
         return v
     }
 
-    // True only if the key was saved AND read back correctly.
-    fun save(p: SharedPreferences, key: String): Boolean {
+    // True only if the value was saved AND read back correctly.
+    fun save(p: SharedPreferences, key: String, name: String = NAME): Boolean {
         val k = key.trim()
         if (k.isEmpty()) return false
         return try {
-            p.edit().putString(NAME, encrypt(k)).commit() && load(p) == k
+            p.edit().putString(name, encrypt(k)).commit() && load(p, name) == k
         } catch (e: Exception) {
             false
         }
     }
 
-    fun clear(p: SharedPreferences): Boolean = p.edit().remove(NAME).commit()
+    fun clear(p: SharedPreferences, name: String = NAME): Boolean = p.edit().remove(name).commit()
 }
