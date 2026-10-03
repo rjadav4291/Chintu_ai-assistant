@@ -11,13 +11,14 @@ import org.json.JSONArray
 
 // Local tools: they work without internet and never call an online AI.
 // handle() returns a reply if a tool handled the message, or null to let the AI answer.
+// enabled(id) says whether a skill is switched on: "time", "stopwatch", "timer", "notes", "calc".
 class Tools(private val ctx: Context) {
     private val prefs = ctx.getSharedPreferences("chintu_tools", Context.MODE_PRIVATE)
     private var pending: (() -> String)? = null
     private val yes = setOf("yes", "y", "ok", "okay", "confirm", "sure", "haan", "ha", "han", "હા", "हाँ", "हां")
     private val no = setOf("no", "n", "cancel", "nahi", "na", "ના", "नहीं")
 
-    fun handle(raw: String): String? {
+    fun handle(raw: String, enabled: (String) -> Boolean = { true }): String? {
         val text = raw.trim()
         val low = text.lowercase(Locale.ROOT)
         val act = pending
@@ -27,7 +28,11 @@ class Tools(private val ctx: Context) {
             if (word in yes) return act()
             if (word in no) return "Okay, I cancelled that."
         }
-        return timeDate(low) ?: stopwatch(low) ?: timer(low) ?: notes(text, low) ?: calc(low)
+        return (if (enabled("time")) timeDate(low) else null)
+            ?: (if (enabled("stopwatch")) stopwatch(low) else null)
+            ?: (if (enabled("timer")) timer(low) else null)
+            ?: (if (enabled("notes")) notes(text, low) else null)
+            ?: (if (enabled("calc")) calc(low) else null)
     }
 
     // ---------- time and date ----------
