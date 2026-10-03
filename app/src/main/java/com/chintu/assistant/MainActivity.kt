@@ -83,6 +83,7 @@ class MainActivity : ComponentActivity() {
                 var showAi by remember { mutableStateOf(false) }
                 var showModel by remember { mutableStateOf(false) }
                 var showPrivacy by remember { mutableStateOf(false) }
+                var showSkills by remember { mutableStateOf(false) }
                 Box(Modifier.fillMaxSize().background(Ink).systemBarsPadding()) {
                     if (showSettings) {
                         SettingsScreen(
@@ -133,6 +134,8 @@ class MainActivity : ComponentActivity() {
                         )
                     } else if (showModel) {
                         ModelScreen(ai = liteRt, back = { showModel = false })
+                    } else if (showSkills) {
+                        SkillsScreen(back = { showSkills = false })
                     } else if (showPrivacy) {
                         PrivacyScreen(
                             privateOn = privateOn,
@@ -163,7 +166,8 @@ class MainActivity : ComponentActivity() {
                             openSettings = { showSettings = true },
                             openAi = { showAi = true },
                             openModel = { showModel = true },
-                            openPrivacy = { showPrivacy = true }
+                            openPrivacy = { showPrivacy = true },
+                            openSkills = { showSkills = true }
                         )
                     }
                 }
@@ -219,15 +223,18 @@ fun MainScreen(
     openAi: () -> Unit,
     openModel: () -> Unit,
     openPrivacy: () -> Unit,
+    openSkills: () -> Unit,
     vm: ChatVm = viewModel()
 ) {
     var input by remember { mutableStateOf("") }
     var toolHost by remember { mutableStateOf("") }
+    var menuOpen by remember { mutableStateOf(false) }
     val ctx = LocalContext.current
     val tools = remember { Tools(ctx) }
     val memory = remember { MemoryStore(ctx) }
     val launcher = remember { AppLauncher(ctx) }
     val online = remember { OnlineTools(ctx) }
+    val skills = remember { SkillSettings(ctx) }
     val listState = rememberLazyListState()
 
     // Private Mode forces OFFLINE: neither the online AI nor the online tools are used.
@@ -275,9 +282,12 @@ fun MainScreen(
         if (text.isBlank()) return
         if (vm.state == AiState.SPEAKING) voice.stopSpeaking()
         if (vm.state == AiState.THINKING) return
-        // Local handlers run first and never contact any AI or website.
+        // Local skills run first and never contact any AI or website. A skill that is switched off is skipped.
         val localReply = try {
-            memory.handle(text) ?: tools.handle(text) ?: launcher.handle(text) ?: online.setCity(text)
+            (if (skills.enabled("memory")) memory.handle(text) else null)
+                ?: tools.handle(text) { id -> skills.enabled(id) }
+                ?: (if (skills.enabled("apps")) launcher.handle(text) else null)
+                ?: (if (skills.enabled("weather")) online.setCity(text) else null)
         } catch (e: Exception) {
             "A local tool failed: ${e.message}"
         }
@@ -289,6 +299,17 @@ fun MainScreen(
         // Weather, Wikipedia and web search.
         val req = try { online.parse(text) } catch (e: Exception) { null }
         if (req != null) {
+            val skillId = when (req.kind) {
+                "weather" -> "weather"
+                "wiki" -> "wiki"
+                else -> "search"
+            }
+            if (!skills.enabled(skillId)) {
+                val off = "The ${SkillCatalog.nameOf(skillId)} skill is turned off, so I did not use it. You can turn it on in Skills."
+                vm.addLocal(text.trim(), off)
+                speakIfOn(off)
+                return
+            }
             if (req.kind == "weather" && req.arg.isBlank()) {
                 val ask = "Which city? Say for example: weather in Ahmedabad. You can also say: set my city to Ahmedabad."
                 vm.addLocal(text.trim(), ask)
@@ -313,8 +334,9 @@ fun MainScreen(
             return
         }
         if (onlinePath) PrivacyLog.record(host)
-        // Extra context for the AI: what the app can do, plus saved memories (only if Memory is ON).
-        val extra = listOf(LAUNCHER_PROMPT, ONLINE_TOOLS_PROMPT, memory.promptSection())
+        // Extra context for the AI: what the app can do, which skills are off, plus saved memories (only if Memory is ON).
+        val offNames = SkillCatalog.all.filter { it.available && !skills.enabled(it.id) }.map { it.name }
+        val extra = listOf(LAUNCHER_PROMPT, ONLINE_TOOLS_PROMPT, skillsPrompt(offNames), memory.promptSection())
             .filter { it.isNotEmpty() }.joinToString("\n\n")
         vm.sendRouted(text, effectiveMode, local, baseUrl, apiKey, model, name, extra) { reply -> speakIfOn(reply) }
     }
@@ -381,9 +403,21 @@ fun MainScreen(
             TextButton(onClick = openAi, contentPadding = pad) {
                 Text("Mode: $modeLabel", color = if (privateOn) Mint else Cyan, fontSize = 13.sp)
             }
-            TextButton(onClick = openModel, contentPadding = pad) { Text("Model", color = Cyan, fontSize = 13.sp) }
+            TextButton(onClick = openSkills, contentPadding = pad) { Text("Skills", color = Cyan, fontSize = 13.sp) }
             TextButton(onClick = openPrivacy, contentPadding = pad) { Text("Privacy", color = Mint, fontSize = 13.sp) }
-            TextButton(onClick = openSettings, contentPadding = pad) { Text("Settings", color = Dim, fontSize = 13.sp) }
+            Box {
+                TextButton(onClick = { menuOpen = true }, contentPadding = pad) { Text("More", color = Dim, fontSize = 13.sp) }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(text = { Text("Model") }, onClick = {
+                        menuOpen = false
+                        openModel()
+                    })
+                    DropdownMenuItem(text = { Text("Settings") }, onClick = {
+                        menuOpen = false
+                        openSettings()
+                    })
+                }
+            }
         }
         Orb(vm.state)
         Text(name, fontSize = 30.sp, color = Color.White)
