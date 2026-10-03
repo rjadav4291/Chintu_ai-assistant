@@ -26,7 +26,7 @@ import java.util.Date
 import java.util.Locale
 import org.json.JSONArray
 
-// Counts the online AI requests this app started since it was opened. Not saved anywhere.
+// Counts the online requests (AI and web tools) this app started since it was opened. Not saved anywhere.
 object PrivacyLog {
     @Volatile var count = 0
     @Volatile var lastHost = ""
@@ -39,9 +39,9 @@ object PrivacyLog {
     }
 
     fun summary(): String {
-        if (count == 0) return "No online AI requests since the app was opened."
+        if (count == 0) return "No online requests since the app was opened."
         val t = SimpleDateFormat("h:mm:ss a", Locale.ENGLISH).format(Date(lastTime))
-        return "Online AI requests started since the app was opened: $count. Last one: $t, sent to $lastHost."
+        return "Online requests started since the app was opened (AI and web tools): $count. Last one: $t, sent to $lastHost."
     }
 }
 
@@ -112,19 +112,22 @@ fun PrivacyScreen(
     val memory = remember { MemoryStore(ctx) }
     var rev by remember { mutableStateOf(0) }
     var msg by remember { mutableStateOf("") }
+    val toolPrefs = remember { ctx.getSharedPreferences("chintu_tools", Context.MODE_PRIVATE) }
     val notes = remember(rev) { DataControls.noteCount(ctx) }
     val memories = remember(rev) { memory.all().size }
+    val city = remember(rev) { toolPrefs.getString("weather_city", "") ?: "" }
+    val searchKey = remember(rev) { KeyVault.load(toolPrefs, "tavily_key").isNotEmpty() }
     val micOk = remember(rev) { ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED }
     val alarmOk = remember(rev) { ctx.checkSelfPermission("com.android.alarm.permission.SET_ALARM") == PackageManager.PERMISSION_GRANTED }
     val modelFile = remember(rev) { ai.modelFile() }
 
     val goesOnline = if (privateOn) {
-        "Private Mode is ON: nothing is sent to any online AI."
+        "Private Mode is ON: nothing is sent to any online AI, and weather, Wikipedia and web search are not used."
     } else {
         when (mode) {
-            AiMode.OFFLINE -> "OFFLINE mode: nothing is sent to any online AI."
+            AiMode.OFFLINE -> "OFFLINE mode: nothing is sent to any online AI, and weather, Wikipedia and web search are not used."
             AiMode.AUTO, AiMode.ONLINE ->
-                "When I use the online AI ($host), these are sent: your message, the recent conversation and my instructions. Saved memories are included only while Memory is ON. Your API key is sent only as your login to that service. Calculator, time, date, stopwatch, notes, memory commands and opening apps are handled on the phone and are not sent."
+                "When I use the online AI ($host), these are sent: your message, the recent conversation and my instructions. Saved memories are included only while Memory is ON. Your API key is sent only as your login to that service. Weather, Wikipedia and web search send only the city or words you asked about. Calculator, time, date, stopwatch, notes, memory commands and opening apps are handled on the phone and are not sent."
         }
     }
 
@@ -142,7 +145,7 @@ fun PrivacyScreen(
             Text(if (privateOn) "Private Mode ON" else "Private Mode OFF", color = Color.White)
         }
         Text(
-            "While ON, AI answers come only from the on-device model and the AI mode setting is ignored. If the on-device model isn't ready, I tell you instead of going online. Not covered: your phone's speech service, which may use the internet when you tap Mic.",
+            "While ON, AI answers come only from the on-device model and the AI mode setting is ignored. If the on-device model isn't ready, I tell you instead of going online. Listening to your voice also uses only on-device speech recognition; if this phone can't do that, I won't listen.",
             color = Dim
         )
 
@@ -150,11 +153,13 @@ fun PrivacyScreen(
         Text(PrivacyLog.summary(), color = Dim)
         Text(goesOnline, color = Dim)
 
+        OnlineToolsSection()
+
         Text("Permissions", fontSize = 18.sp, color = Color.White)
         Text("Microphone: " + if (micOk) "allowed" else "not allowed", color = if (micOk) Cyan else Dim)
         Text("Used only while you tap Mic, to listen to you. I ask only when you first tap Mic.", color = Dim)
         Text("Internet: allowed (Android doesn't ask for this one).", color = Cyan)
-        Text("Used only to contact the online AI when the mode allows it.", color = Dim)
+        Text("Used only to contact the online AI and the online tools when the mode allows it.", color = Dim)
         Text("Timers: " + if (alarmOk) "allowed" else "not allowed", color = if (alarmOk) Cyan else Dim)
         Text("Used only to send timers to your Clock app.", color = Dim)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -172,14 +177,16 @@ fun PrivacyScreen(
         Text("Stored on this phone", fontSize = 18.sp, color = Color.White)
         Text("Notes: $notes", color = Dim)
         Text("Memories: $memories (Memory is ${if (memory.enabled) "ON" else "OFF"})", color = Dim)
-        Text("API key: " + if (keySaved) "saved" else "not set", color = Dim)
+        Text("AI API key: " + if (keySaved) "saved" else "not set", color = Dim)
+        Text("Web search key: " + if (searchKey) "saved" else "not set", color = Dim)
+        Text("Default city: " + if (city.isEmpty()) "none" else city, color = Dim)
         Text(
             "Offline model: " + if (modelFile == null) "none" else "${modelFile.name} (${modelFile.length() / (1024 * 1024)} MB)",
             color = Dim
         )
         Text("Chat history: kept only in memory while the app is open (${vm.messages.size} messages now). It is never saved to storage.", color = Dim)
         Text(
-            "Everything above stays in the app's private storage. It is not encrypted yet. Phone backup of this app's data is turned off. Uninstalling the app deletes it all.",
+            "API keys are stored encrypted. Notes, memories, the city and settings are in the app's private storage and are not encrypted. Phone backup of this app's data is turned off. Uninstalling the app deletes it all.",
             color = Dim
         )
 
@@ -198,7 +205,7 @@ fun PrivacyScreen(
             msg = if (memory.clearAll()) "All memories deleted." else "I couldn't delete the memories."
             rev++
         }
-        Confirmable("Remove API key", "Remove the saved API key?") {
+        Confirmable("Remove AI API key", "Remove the saved AI API key?") {
             onClearKey()
             val gone = ctx.getSharedPreferences("chintu", Context.MODE_PRIVATE).getString("openai_key", null) == null
             msg = if (gone) "API key removed." else "I couldn't remove the key."
@@ -210,7 +217,7 @@ fun PrivacyScreen(
         }
         Confirmable(
             "Delete ALL local data",
-            "Delete everything: notes, memories, API key, settings, the offline model and this chat? The app will restart."
+            "Delete everything: notes, memories, keys, settings, the offline model and this chat? The app will restart."
         ) {
             val r = DataControls.deleteAll(ctx, ai, vm)
             Toast.makeText(ctx, r, Toast.LENGTH_LONG).show()
