@@ -155,7 +155,7 @@ class VoiceManager(private val ctx: Context) {
         else -> "Speech recognition failed (code $code)."
     }
 
-    // onDeviceOnly = true (Private Mode): listen only with the on-device recogniser, or refuse. Never falls back to online.
+    // onDeviceOnly = true: listen only with the on-device recogniser, or refuse. Never falls back to online.
     fun startListening(
         lang: Lang,
         partial: (String) -> Unit,
@@ -187,7 +187,7 @@ class VoiceManager(private val ctx: Context) {
             override fun onError(error: Int) {
                 val serious = error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT
                 val hint = if (onDeviceOnly && (error == 12 || error == 13))
-                    " For Private Mode, download this language for offline use in your phone's speech settings."
+                    " For on-device listening, download this language for offline use in your phone's speech settings."
                 else ""
                 fail(errorText(error) + hint, serious)
             }
@@ -213,6 +213,16 @@ class VoiceManager(private val ctx: Context) {
         recognizer?.stopListening()
     }
 
+    // Stops listening immediately and throws the result away.
+    fun cancelListening() {
+        try {
+            recognizer?.cancel()
+        } catch (e: Exception) {
+        }
+        recognizer?.destroy()
+        recognizer = null
+    }
+
     fun release() {
         silence()
         tts?.shutdown()
@@ -220,3 +230,5 @@ class VoiceManager(private val ctx: Context) {
         recognizer = null
     }
 }
+
+// END OF FILE
