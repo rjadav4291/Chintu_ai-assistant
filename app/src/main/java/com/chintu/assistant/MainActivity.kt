@@ -69,6 +69,7 @@ class MainActivity : ComponentActivity() {
                 var cfg by remember { mutableStateOf(loadCfg(prefs)) }
                 var mode by remember { mutableStateOf(loadMode(prefs)) }
                 var privateOn by remember { mutableStateOf(prefs.getBoolean("private_mode", false)) }
+                var wakeOn by remember { mutableStateOf(prefs.getBoolean("wake_on", false)) }
                 var showSettings by remember { mutableStateOf(false) }
                 var showAi by remember { mutableStateOf(false) }
                 var showModel by remember { mutableStateOf(false) }
@@ -85,6 +86,7 @@ class MainActivity : ComponentActivity() {
                             baseUrl = baseUrl,
                             voice = voice,
                             cfg = cfg,
+                            wakeOn = wakeOn,
                             onName = { n ->
                                 val clean = n.trim().ifEmpty { "Chintu" }
                                 prefs.edit().putString("name", clean).apply()
@@ -109,6 +111,9 @@ class MainActivity : ComponentActivity() {
                             onCfg = { c ->
                                 cfg = c
                                 saveCfg(prefs, c)
+                            },
+                            onWake = { on ->
+                                if (prefs.edit().putBoolean("wake_on", on).commit()) wakeOn = on
                             },
                             back = { showSettings = false }
                         )
@@ -155,7 +160,11 @@ class MainActivity : ComponentActivity() {
                             cfg = cfg,
                             mode = mode,
                             privateOn = privateOn,
+                            wakeOn = wakeOn,
                             local = liteRt,
+                            onWakeOff = {
+                                if (prefs.edit().putBoolean("wake_on", false).commit()) wakeOn = false
+                            },
                             openSettings = { showSettings = true },
                             openAi = { showAi = true },
                             openModel = { showModel = true },
@@ -169,7 +178,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        AppFlags.foreground = true
+    }
+
     override fun onStop() {
+        AppFlags.foreground = false
+        voice.cancelListening()
         liteRt.releaseAsync()
         super.onStop()
     }
@@ -201,3 +217,5 @@ fun Orb(state: AiState) {
         drawCircle(Brush.radialGradient(listOf(Color.White.copy(.9f), core, Violet, Color.Transparent), c, r * .62f), r * .62f, c)
     }
 }
+
+// END OF FILE
