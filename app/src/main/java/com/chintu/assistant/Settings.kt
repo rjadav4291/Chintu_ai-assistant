@@ -1,7 +1,11 @@
 package com.chintu.assistant
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.Looper
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -10,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -23,14 +28,17 @@ fun SettingsScreen(
     baseUrl: String,
     voice: VoiceManager,
     cfg: VoiceCfg,
+    wakeOn: Boolean,
     onName: (String) -> Unit,
     onSaveKey: (String) -> Unit,
     onClearKey: () -> Unit,
     onModel: (String) -> Unit,
     onBaseUrl: (String) -> Unit,
     onCfg: (VoiceCfg) -> Unit,
+    onWake: (Boolean) -> Unit,
     back: () -> Unit
 ) {
+    val ctx = LocalContext.current
     var draft by remember { mutableStateOf(name) }
     var keyDraft by remember { mutableStateOf("") }
     var modelDraft by remember { mutableStateOf(model) }
@@ -42,6 +50,15 @@ fun SettingsScreen(
     var pitchDraft by remember { mutableStateOf(cfg.pitch) }
     var voiceMsg by remember { mutableStateOf("") }
     var voices by remember { mutableStateOf<List<String>>(emptyList()) }
+    var wakeMsg by remember { mutableStateOf("") }
+    val micLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            onWake(true)
+            wakeMsg = ""
+        } else {
+            wakeMsg = "Microphone permission was not allowed, so the wake word can't be turned on."
+        }
+    }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -51,9 +68,34 @@ fun SettingsScreen(
         OutlinedTextField(draft, { draft = it }, label = { Text("Assistant name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         Button(onClick = { onName(draft) }) { Text("Save name") }
 
+        Text("Wake word (experimental)", fontSize = 22.sp, color = Color.White)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(checked = wakeOn, onCheckedChange = { want ->
+                if (!want) {
+                    onWake(false)
+                    wakeMsg = ""
+                } else if (!voice.onDeviceAvailable()) {
+                    wakeMsg = "This phone can't recognise speech on the device itself, and I won't keep listening through an online service. So the wake word can't be turned on here."
+                } else if (ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    onWake(true)
+                    wakeMsg = ""
+                } else {
+                    micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                }
+            })
+            Spacer(Modifier.width(12.dp))
+            Text(if (wakeOn) "Wake word ON" else "Wake word OFF", color = Color.White)
+        }
+        Text("Wake phrase: \"Hey $name\". It follows the assistant name once you save a new name.", color = Dim)
+        Text(
+            "It works only while this app is open on screen. It listens with your phone's on-device speech recognition, so no audio is sent online. It uses the microphone and battery all the time, it can mishear, and the phone may beep each time it restarts listening. Say \"Hey $name\" in English, then speak your request. A true always-on wake word with the screen off needs a dedicated detection engine; the free Picovoice option ended on June 30, 2026, so I have not added one.",
+            color = Dim
+        )
+        if (wakeMsg.isNotEmpty()) Text(wakeMsg, color = Red)
+
         Text("Local tools", fontSize = 22.sp, color = Color.White)
         Text(
-            "Calculator, time, date, stopwatch and notes work without internet. Timers are handed to your phone's Clock app. Notes are saved only on this phone, in the app's private storage.",
+            "Calculator, time, date, stopwatch and notes work without internet. Timers go to your phone's Clock app. Reminders are scheduled with Android. Notes, reminders and memories are saved only on this phone, in the app's private storage.",
             color = Dim
         )
 
@@ -107,7 +149,7 @@ fun SettingsScreen(
             Text("Choose a specific language above to pick a voice.", color = Dim)
         }
         Text(
-            "Listening is done by your phone's speech service (often Google's) and may use the internet. Speaking uses your phone's text-to-speech engine.",
+            "Listening is done by your phone's speech service. Unless Private Mode is on, it may use the internet. Speaking uses your phone's text-to-speech engine.",
             color = Dim
         )
 
@@ -150,7 +192,9 @@ fun SettingsScreen(
                             modelList = i.take(40)
                             modelMsg = if (i.isEmpty()) "No models are available to this key."
                             else "Available to your key: ${i.size} (showing up to 40). Tap one to use it:"
-                        } else modelMsg = er ?: "Unknown error"
+                        } else {
+                            modelMsg = er ?: "Unknown error"
+                        }
                     }
                 }.start()
             },
@@ -161,8 +205,10 @@ fun SettingsScreen(
             TextButton(onClick = { modelDraft = id; onModel(id) }) { Text(id) }
         }
         Text(
-            "Your messages are sent to the server address above. A gateway service may forward them to the model provider. The key is stored in this app's private storage, not yet encrypted (planned for the Privacy phase).",
+            "Your messages are sent to the server address above. A gateway service may forward them to the model provider. The API key is stored encrypted, using a key held by the Android Keystore.",
             color = Dim
         )
     }
 }
+
+// END OF FILE
