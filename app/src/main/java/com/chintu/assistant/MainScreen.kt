@@ -23,6 +23,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 
 @Composable
 fun MainScreen(
@@ -34,7 +36,9 @@ fun MainScreen(
     cfg: VoiceCfg,
     mode: AiMode,
     privateOn: Boolean,
+    wakeOn: Boolean,
     local: LocalAi,
+    onWakeOff: () -> Unit,
     openSettings: () -> Unit,
     openAi: () -> Unit,
     openModel: () -> Unit,
@@ -46,6 +50,8 @@ fun MainScreen(
     var input by remember { mutableStateOf("") }
     var toolHost by remember { mutableStateOf("") }
     var menuOpen by remember { mutableStateOf(false) }
+    var wakeTick by remember { mutableStateOf(0) }
+    var wakeFails by remember { mutableStateOf(0) }
     val ctx = LocalContext.current
     val tools = remember { Tools(ctx) }
     val memory = remember { MemoryStore(ctx) }
@@ -217,6 +223,52 @@ fun MainScreen(
         }
     }
 
+    // Wake word: while the app is on screen and idle, listen on-device for "Hey <name>". Nothing is sent online.
+    LaunchedEffect(wakeOn, vm.state, AppFlags.foreground, wakeTick) {
+        if (!wakeOn || !AppFlags.foreground || vm.state != AiState.READY) return@LaunchedEffect
+        if (ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return@LaunchedEffect
+        if (!voice.onDeviceAvailable()) {
+            onWakeOff()
+            vm.notice("The wake word was turned off, because this phone can't recognise speech on the device itself.", true)
+            return@LaunchedEffect
+        }
+        delay(400)
+        voice.startListening(
+            Lang.ENGLISH,
+            partial = { },
+            done = { text ->
+                wakeFails = 0
+                val rest = Wake.match(text, name)
+                if (rest == null) {
+                    wakeTick++
+                } else if (rest.isNotBlank()) {
+                    doSend(rest)
+                } else {
+                    startMic()
+                }
+            },
+            fail = { msg, serious ->
+                if (serious) {
+                    wakeFails++
+                    if (wakeFails >= 3) {
+                        onWakeOff()
+                        vm.notice("The wake word was turned off after repeated problems: $msg", true)
+                    } else {
+                        wakeTick++
+                    }
+                } else {
+                    wakeTick++
+                }
+            },
+            onDeviceOnly = true
+        )
+        try {
+            awaitCancellation()
+        } finally {
+            if (vm.state != AiState.LISTENING) voice.cancelListening()
+        }
+    }
+
     val modeLabel = if (privateOn) "PRIVATE" else mode.label
     val hasReply = vm.messages.any { !it.fromUser && !it.isError }
     val last = if (hasReply) " · last: ${vm.source}" else ""
@@ -267,6 +319,9 @@ fun MainScreen(
         Orb(vm.state)
         Text(name, fontSize = 30.sp, color = Color.White)
         Text(status, color = statusColor, fontSize = 13.sp)
+        if (wakeOn) {
+            Text("Wake word ON: say \"Hey $name\" (on-device, only while this app is open)", color = Mint, fontSize = 12.sp)
+        }
         Spacer(Modifier.height(12.dp))
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(vm.messages) { m ->
@@ -297,3 +352,5 @@ fun MainScreen(
         }
     }
 }
+
+// END OF FILE
