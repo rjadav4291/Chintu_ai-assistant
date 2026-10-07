@@ -45,6 +45,7 @@ fun MainScreen(
     openPrivacy: () -> Unit,
     openSkills: () -> Unit,
     openReminders: () -> Unit,
+    openVision: () -> Unit,
     vm: ChatVm = viewModel()
 ) {
     var input by remember { mutableStateOf("") }
@@ -234,7 +235,7 @@ fun MainScreen(
         }
         delay(400)
         voice.startListening(
-            Lang.ENGLISH,
+            Lang.AUTO,
             partial = { },
             done = { text ->
                 wakeFails = 0
@@ -301,6 +302,10 @@ fun MainScreen(
             Box {
                 TextButton(onClick = { menuOpen = true }, contentPadding = pad) { Text("More", color = Dim, fontSize = 13.sp) }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(text = { Text("Vision") }, onClick = {
+                        menuOpen = false
+                        openVision()
+                    })
                     DropdownMenuItem(text = { Text("Reminders") }, onClick = {
                         menuOpen = false
                         openReminders()
