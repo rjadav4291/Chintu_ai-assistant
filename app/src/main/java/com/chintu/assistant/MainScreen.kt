@@ -23,8 +23,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.delay
 
 @Composable
 fun MainScreen(
@@ -51,8 +49,8 @@ fun MainScreen(
     var input by remember { mutableStateOf("") }
     var toolHost by remember { mutableStateOf("") }
     var menuOpen by remember { mutableStateOf(false) }
-    var wakeTick by remember { mutableStateOf(0) }
-    var wakeFails by remember { mutableStateOf(0) }
+    var agentStatus by remember { mutableStateOf("") }
+    var agentOnline by remember { mutableStateOf(false) }
     val ctx = LocalContext.current
     val tools = remember { Tools(ctx) }
     val memory = remember { MemoryStore(ctx) }
@@ -60,6 +58,8 @@ fun MainScreen(
     val online = remember { OnlineTools(ctx) }
     val skills = remember { SkillSettings(ctx) }
     val reminders = remember { ReminderSkill(ctx) }
+    val agent = remember { Agent() }
+    val runner = remember { AgentRunner(ctx, reminders, memory, tools, launcher, online, skills) }
     val listState = rememberLazyListState()
 
     // Private Mode forces OFFLINE: neither the online AI nor the online tools are used.
@@ -112,10 +112,85 @@ fun MainScreen(
         }.start()
     }
 
+    // Runs an approved plan on a background thread and shows the checked result at the end.
+    fun runPlan(plan: AgentPlan) {
+        vm.state = AiState.THINKING
+        agentStatus = "AGENT · starting"
+        val toolsOk = effectiveMode != AiMode.OFFLINE
+        Thread {
+            val res = runner.run(plan, toolsOk) { i, n, s ->
+                Handler(Looper.getMainLooper()).post {
+                    agentOnline = s.skill == "weather" || s.skill == "wiki" || s.skill == "search"
+                    agentStatus = "AGENT · step $i of $n: ${s.command.take(40)}"
+                }
+            }
+            Handler(Looper.getMainLooper()).post {
+                agentStatus = ""
+                agentOnline = false
+                vm.messages.add(Msg(false, res.text))
+                vm.source = "AGENT"
+                vm.state = AiState.READY
+                speakIfOn(res.spoken)
+            }
+        }.start()
+    }
+
+    // The online AI only makes the plan. It never sees the results and never runs anything itself.
+    fun planWithAi(goal: String) {
+        vm.state = AiState.THINKING
+        toolHost = host
+        PrivacyLog.record(host)
+        val toolsOk = effectiveMode != AiMode.OFFLINE
+        Thread {
+            var plan: AgentPlan? = null
+            var err: String? = null
+            try {
+                plan = AgentPlanner.planWithAi(baseUrl, apiKey, model, goal, toolsOk) { id -> skills.enabled(id) }
+            } catch (e: PlanException) {
+                err = e.message
+            } catch (e: Exception) {
+                err = describe(e)
+            }
+            val p = plan
+            val er = err
+            Handler(Looper.getMainLooper()).post {
+                toolHost = ""
+                if (p != null) {
+                    agent.pending = p
+                    vm.messages.add(Msg(false, AgentRules.describe(p)))
+                    vm.source = "AGENT PLAN"
+                    vm.state = AiState.READY
+                    speakIfOn("I made a plan with ${p.steps.size} steps. Say yes to run it.")
+                } else {
+                    vm.notice(er ?: "Unknown error", true)
+                }
+            }
+        }.start()
+    }
+
     fun doSend(text: String) {
         if (text.isBlank()) return
         if (vm.state == AiState.SPEAKING) voice.stopSpeaking()
         if (vm.state == AiState.THINKING) return
+        // Several commands in one message (or a plan waiting for yes/no) go to the agent first.
+        val act = try {
+            agent.handle(text, effectiveMode != AiMode.OFFLINE, onlinePath) { id -> skills.enabled(id) }
+        } catch (e: Exception) {
+            null
+        }
+        if (act != null) {
+            val reply = act.reply
+            val run = act.run
+            val goal = act.aiGoal
+            if (reply != null) {
+                vm.addLocal(text.trim(), reply)
+                speakIfOn(reply.substringBefore("\n"))
+            } else {
+                vm.messages.add(Msg(true, text.trim()))
+                if (run != null) runPlan(run) else if (goal != null) planWithAi(goal)
+            }
+            return
+        }
         // Reminders first, so that "remember to ..." and "remind me ..." are understood correctly.
         val rr = try {
             if (skills.enabled("reminders")) reminders.handle(text, Reminders.notifOk(ctx)) else null
@@ -224,58 +299,23 @@ fun MainScreen(
         }
     }
 
-    // Wake word: while the app is on screen and idle, listen on-device for "Hey <name>". Nothing is sent online.
-    LaunchedEffect(wakeOn, vm.state, AppFlags.foreground, wakeTick) {
-        if (!wakeOn || !AppFlags.foreground || vm.state != AiState.READY) return@LaunchedEffect
-        if (ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return@LaunchedEffect
-        if (!voice.onDeviceAvailable()) {
-            onWakeOff()
-            vm.notice("The wake word was turned off, because this phone can't recognise speech on the device itself.", true)
-            return@LaunchedEffect
-        }
-        delay(400)
-        voice.startListening(
-            Lang.AUTO,
-            partial = { },
-            done = { text ->
-                wakeFails = 0
-                val rest = Wake.match(text, name)
-                if (rest == null) {
-                    wakeTick++
-                } else if (rest.isNotBlank()) {
-                    doSend(rest)
-                } else {
-                    startMic()
-                }
-            },
-            fail = { msg, serious ->
-                if (serious) {
-                    wakeFails++
-                    if (wakeFails >= 3) {
-                        onWakeOff()
-                        vm.notice("The wake word was turned off after repeated problems: $msg", true)
-                    } else {
-                        wakeTick++
-                    }
-                } else {
-                    wakeTick++
-                }
-            },
-            onDeviceOnly = true
-        )
-        try {
-            awaitCancellation()
-        } finally {
-            if (vm.state != AiState.LISTENING) voice.cancelListening()
-        }
-    }
+    WakeEffect(
+        wakeOn = wakeOn,
+        voice = voice,
+        vm = vm,
+        name = name,
+        onWakeOff = onWakeOff,
+        onCommand = { doSend(it) },
+        onWakeOnly = { startMic() }
+    )
 
     val modeLabel = if (privateOn) "PRIVATE" else mode.label
     val hasReply = vm.messages.any { !it.fromUser && !it.isError }
     val last = if (hasReply) " · last: ${vm.source}" else ""
-    val thinkingOnline = toolHost.isNotEmpty() || onlinePath
+    val thinkingOnline = toolHost.isNotEmpty() || onlinePath || agentOnline
     val status = if (vm.state == AiState.THINKING) {
-        if (toolHost.isNotEmpty()) "● ONLINE · contacting $toolHost"
+        if (agentStatus.isNotEmpty()) (if (agentOnline) "● ONLINE · " else "") + agentStatus
+        else if (toolHost.isNotEmpty()) "● ONLINE · contacting $toolHost"
         else if (onlinePath) "● ONLINE · contacting $host"
         else "THINKING · on-device"
     } else {
