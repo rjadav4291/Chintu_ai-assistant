@@ -1,9 +1,12 @@
 package com.chintu.assistant
 
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
 import java.util.Locale
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 
 // True while the app is on screen. The wake word listens only while this is true.
 object AppFlags {
@@ -45,6 +48,69 @@ object Wake {
             }
         }
         return null
+    }
+}
+
+// While the app is on screen and idle, listens on the device for "Hey <name>". Nothing is sent online.
+@Composable
+fun WakeEffect(
+    wakeOn: Boolean,
+    voice: VoiceManager,
+    vm: ChatVm,
+    name: String,
+    onWakeOff: () -> Unit,
+    onCommand: (String) -> Unit,
+    onWakeOnly: () -> Unit
+) {
+    val ctx = LocalContext.current
+    var tick by remember { mutableStateOf(0) }
+    var fails by remember { mutableStateOf(0) }
+    val command by rememberUpdatedState(onCommand)
+    val wakeOnly by rememberUpdatedState(onWakeOnly)
+    val turnOff by rememberUpdatedState(onWakeOff)
+    LaunchedEffect(wakeOn, vm.state, AppFlags.foreground, tick, name) {
+        if (!wakeOn || !AppFlags.foreground || vm.state != AiState.READY) return@LaunchedEffect
+        if (ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return@LaunchedEffect
+        if (!voice.onDeviceAvailable()) {
+            turnOff()
+            vm.notice("The wake word was turned off, because this phone can't recognise speech on the device itself.", true)
+            return@LaunchedEffect
+        }
+        delay(400)
+        voice.startListening(
+            Lang.AUTO,
+            partial = { },
+            done = { text ->
+                fails = 0
+                val rest = Wake.match(text, name)
+                if (rest == null) {
+                    tick++
+                } else if (rest.isNotBlank()) {
+                    command(rest)
+                } else {
+                    wakeOnly()
+                }
+            },
+            fail = { msg, serious ->
+                if (serious) {
+                    fails++
+                    if (fails >= 3) {
+                        turnOff()
+                        vm.notice("The wake word was turned off after repeated problems: $msg", true)
+                    } else {
+                        tick++
+                    }
+                } else {
+                    tick++
+                }
+            },
+            onDeviceOnly = true
+        )
+        try {
+            awaitCancellation()
+        } finally {
+            if (vm.state != AiState.LISTENING) voice.cancelListening()
+        }
     }
 }
 
